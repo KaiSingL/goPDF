@@ -93,6 +93,15 @@ func sidebar(c *ui.Context, s *AppState) {}
 // toggle (toggleTheme) and the app title on empty state.
 func statusBar(c *ui.Context, s *AppState) {}
 
+// ---- D, shortcuts.go ---------------------------------------------------
+// shortcuts declares the app-wide keyboard bindings for the current window
+// scope (Ctrl+O/W/T, Ctrl+Shift+T, Ctrl+F search focus, Ctrl +/-/= and 0,
+// PageUp/Down, Home/End, Ctrl+K palette, F3 / Shift+F3, Escape). The root
+// view (B, view.go) calls shortcuts(c, s) FIRST so they are in scope for
+// the whole window. Use handle.OnShortcut / c.OnShortcut per the
+// mygo-maintenance skill.
+func shortcuts(c *ui.Context, s *AppState) {}
+
 // ---- D, palette.go -----------------------------------------------------
 // paletteOverlay renders the Ctrl+K command palette over the UI when
 // s.ShowPalette: a query field and results for recent documents
