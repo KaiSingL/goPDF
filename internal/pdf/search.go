@@ -96,38 +96,87 @@ func searchSpans(page int, spans []TextSpan, query string) []SearchHit {
 	return hits
 }
 
-// spanDiv matches one absolutely-positioned block of MuPDF's stext HTML
-// output, e.g.
+// MuPDF v1.28 (go-fitz v1.28.2) emits one <p> per positioned text line,
+// e.g. for a page with "Hello modern-pdf" at PDF (72,720):
 //
-//	<div style="position:absolute;top:720;left:72;width:230.4;height:24">
-//	  <span class="txt1">Hello</span></div>
+//	<div id="page0" style="width:612.0pt;height:792.0pt">
+//	<p style="top:52.8pt;left:72.0pt;line-height:24.0pt"><span style="font-family:Arial,sans-serif;font-size:24.0pt;color:#000000">Hello modern-pdf</span></p>
+//	</div>
 //
-// Coordinates are in points from the page's top-left. Values may be decimal
-// and negative for cropped pages. Tolerant of the tag soup inside the div.
-var spanDiv = regexp.MustCompile(`(?s)position:absolute;\s*top:(-?[\d.]+);\s*left:(-?[\d.]+);\s*width:(-?[\d.]+);\s*height:(-?[\d.]+)"[^>]*>(.*?)</div>`)
+// top/left are the line's top-left corner in points from the page's
+// top-left origin (y grows down); line-height is the line box height.
+// Notably the format carries NO width, so extractSpans estimates one from
+// the font size and rune count, clamped to the page box — good enough for
+// highlight rectangles.
+var spanP = regexp.MustCompile(`(?s)<p\s+style="([^"]*)"[^>]*>(.*?)</p>`)
+
+// pageDiv matches the per-page wrapper carrying the page box size.
+var pageDiv = regexp.MustCompile(`<div id="page\d+" style="width:([\d.]+)pt;height:([\d.]+)pt"`)
 
 var tagRE = regexp.MustCompile(`<[^>]*>`)
+
+// stylePt picks "name:<number>pt" pairs out of style attributes. Requiring
+// the pt unit keeps font-family lists and colors out of the matches.
+var stylePt = regexp.MustCompile(`([a-z-]+):(-?[\d.]+)pt`)
+
+// avgCharWidth is the assumed fraction of font-size per rune used to
+// estimate span width (MuPDF 1.28's stext HTML has no width). Roughly the
+// mean advance of Helvetica mixed-case text.
+const avgCharWidth = 0.55
 
 // extractSpans parses positioned text spans out of one page of MuPDF stext
 // HTML (doc.HTML(page, false)). Inner tags are stripped and HTML entities
 // unescaped. Returns nil when nothing parses.
 func extractSpans(docHTML string, page int) []TextSpan {
-	matches := spanDiv.FindAllStringSubmatch(docHTML, -1)
+	pageW := 0.0
+	if m := pageDiv.FindStringSubmatch(docHTML); m != nil {
+		pageW, _ = strconv.ParseFloat(m[1], 64)
+	}
+	matches := spanP.FindAllStringSubmatch(docHTML, -1)
 	if len(matches) == 0 {
 		return nil
 	}
 	spans := make([]TextSpan, 0, len(matches))
 	for _, m := range matches {
-		top, err1 := strconv.ParseFloat(m[1], 64)
-		left, err2 := strconv.ParseFloat(m[2], 64)
-		w, err3 := strconv.ParseFloat(m[3], 64)
-		h, err4 := strconv.ParseFloat(m[4], 64)
-		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		// Style values live on the <p> (top/left/line-height) and the inner
+		// <span> (font-size); search both, first occurrence wins.
+		style := stylePt.FindAllStringSubmatch(m[1]+" "+m[2], -1)
+		val := func(name string) (float64, bool) {
+			for _, s := range style {
+				if s[1] == name {
+					v, err := strconv.ParseFloat(s[2], 64)
+					return v, err == nil
+				}
+			}
+			return 0, false
+		}
+		top, ok1 := val("top")
+		left, ok2 := val("left")
+		if !ok1 || !ok2 {
 			continue
 		}
-		text := strings.TrimSpace(html.UnescapeString(tagRE.ReplaceAllString(m[5], "")))
+		lineH, _ := val("line-height")
+		fontSize, _ := val("font-size")
+		if fontSize <= 0 {
+			fontSize = lineH
+		}
+		if fontSize <= 0 {
+			fontSize = 12
+		}
+		h := lineH
+		if h <= 0 {
+			h = fontSize
+		}
+		text := strings.TrimSpace(html.UnescapeString(tagRE.ReplaceAllString(m[2], "")))
 		if text == "" {
 			continue
+		}
+		w := fontSize * avgCharWidth * float64(len([]rune(text)))
+		if pageW > 0 && left+w > pageW {
+			w = pageW - left // clamp into the page box
+		}
+		if w < 0 {
+			w = 0
 		}
 		spans = append(spans, TextSpan{Page: page, X: left, Y: top, W: w, H: h, Text: text})
 	}

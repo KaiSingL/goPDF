@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"image"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -115,10 +116,12 @@ type Doc struct {
 	sizes [][2]float64 // raw page size in points, per page
 	toc   []OutlineNode
 
-	fit    *fitz.Document // owned by the worker goroutine after Open
+	fit    *fitz.Document // set by Open, read by Close after <-d.done
 	tasks  chan func(*fitz.Document)
 	closed atomic.Bool
 	done   chan struct{}
+
+	closeOnce sync.Once // guards the stop sequence; Close is idempotent
 
 	ixMu  sync.Mutex
 	index *Index // built at most once by IndexAsync
@@ -141,7 +144,7 @@ func Open(path string) (*Doc, error) {
 		path:  abs,
 		id:    fmt.Sprintf("doc-%d", docSeq.Add(1)),
 		pages: fit.NumPage(),
-		meta:  fit.Metadata(),
+		meta:  trimMeta(fit.Metadata()),
 		tasks: make(chan func(*fitz.Document), 128),
 		done:  make(chan struct{}),
 	}
@@ -156,23 +159,31 @@ func Open(path string) (*Doc, error) {
 	}
 	d.toc = outlineTree(fit) // empty outline is not an error (fitz quirk)
 
-	go d.loop()
-	d.tasks <- func(f *fitz.Document) { d.fit = f } // hand over ownership
+	// Hand the fitz document to the worker by passing it as an argument: the
+	// `go` statement is the happens-before edge. (A handover task queued on
+	// the channel is NOT safe: Close sets closed before queueing the stop
+	// sentinel, so the worker's stale-work drop could swallow the handover
+	// and leave d.fit nil — found by TestOpenBasics.)
+	d.fit = fit
+	go d.loop(fit)
 	return d, nil
 }
 
-// loop is the Doc's worker goroutine: the only goroutine that touches
-// d.fit. Tasks queued after Close are dropped; nil is the stop sentinel.
-func (d *Doc) loop() {
+// loop is the Doc's worker goroutine: the only goroutine that uses fit.
+// Tasks queued after Close are dropped; nil is the stop sentinel.
+func (d *Doc) loop(fit *fitz.Document) {
 	defer close(d.done)
 	for task := range d.tasks {
+		if task == nil {
+			// Stop must be checked first: Close sets closed BEFORE queueing
+			// nil, so a closed check in front would swallow the sentinel and
+			// deadlock Close (found by TestOpenBasics).
+			return
+		}
 		if d.closed.Load() {
 			continue // drop stale work, keep draining
 		}
-		if task == nil {
-			return
-		}
-		task(d.fit)
+		task(fit)
 	}
 }
 
@@ -185,8 +196,23 @@ func (d *Doc) ID() string { return d.id }
 // NumPages returns the number of pages.
 func (d *Doc) NumPages() int { return d.pages }
 
-// Meta returns document metadata (format, title, author, ...).
+// Meta returns document metadata (format, title, author, ...). Values are
+// trimmed of the NUL padding go-fitz's fixed-buffer lookup leaves in place;
+// absent fields are "".
 func (d *Doc) Meta() map[string]string { return d.meta }
+
+// trimMeta cuts each metadata value at its first NUL. go-fitz v1.28.2's
+// Metadata converts a fixed 256-byte C buffer with string(buf) without
+// locating the terminator, so every value arrives NUL-padded (verified
+// empirically; see cache/pdf test suite).
+func trimMeta(m map[string]string) map[string]string {
+	for k, v := range m {
+		if i := strings.IndexByte(v, 0); i >= 0 {
+			m[k] = v[:i]
+		}
+	}
+	return m
+}
 
 // PageSize returns the raw page size in points, before any viewer rotation.
 // For 90/270 rotation the caller swaps the values.
@@ -330,13 +356,18 @@ func (d *Doc) IndexAsync(fn func(*Index, error)) {
 }
 
 // Close stops the worker and releases the MuPDF document. Pending callbacks
-// may be dropped. Close is idempotent and waits for the worker to finish.
+// may be dropped. Close is idempotent and waits for the worker to finish;
+// concurrent and repeated calls block until the first Close completed.
 func (d *Doc) Close() {
-	if d.closed.CompareAndSwap(false, true) {
+	// The whole stop sequence must be inside the Once: a second Close must
+	// not repeat _ = d.fit.Close() — that drops the MuPDF document twice and
+	// crashes in cgo (found by TestCloseIdempotent).
+	d.closeOnce.Do(func() {
+		d.closed.Store(true)
 		d.tasks <- nil
-	}
-	<-d.done
-	_ = d.fit.Close()
+		<-d.done
+		_ = d.fit.Close()
+	})
 }
 
 // normalizeRGBA copies a possibly non-zero-origin fitz render into a fresh
