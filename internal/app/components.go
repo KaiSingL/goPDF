@@ -31,6 +31,16 @@ import (
 // window is the main window, set by main.go (D) immediately after creation.
 var window *mygo.Window
 
+// SetWindow installs the main window; main.go calls it right after creating
+// the window so background goroutines can hop to the UI thread via update.
+func SetWindow(w *mygo.Window) { window = w }
+
+// SearchFocus is the focus request channel for the toolbar search field:
+// shortcuts set it to a non-empty token (e.g. "search-<n>", unique per
+// request) and the toolbar's search field FocusBinds to it, taking focus on
+// the next build. See the mygo-maintenance skill's FocusBind pattern.
+var SearchFocus string
+
 // update runs fn on the UI thread. Safe from any goroutine. Before the
 // window exists (unit tests) fn runs inline on the calling goroutine.
 func update(fn func()) {
@@ -40,6 +50,9 @@ func update(fn func()) {
 	}
 	fn()
 }
+
+// Update is the exported variant of update for package main.
+func Update(fn func()) { update(fn) }
 
 // ---- B, viewer.go ------------------------------------------------------
 // viewer renders the scrollable page area for the active tab: requests

@@ -351,6 +351,13 @@ func (t *Tab) RotateBy() {
 	t.Rotate = (t.Rotate + 90) % 360
 }
 
+// SetCurrentPage updates the current page WITHOUT recording history — the
+// viewer calls this as scrolling reveals new pages. Jumps (outline,
+// thumbnails, page input, palette, search) use Navigate instead.
+func (t *Tab) SetCurrentPage(p int) {
+	t.CurPage = clampInt(p, 0, t.NumPages-1)
+}
+
 // Reload invalidates the tab's rendered images; the viewer re-renders the
 // visible pages when ReloadGen changes.
 func (t *Tab) Reload() {
