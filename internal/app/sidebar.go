@@ -1,0 +1,330 @@
+// sidebar.go renders the left panel content (spec §4: "Left sidebar 280px
+// collapsible: Toggle between Thumbnails / Outline"). view.go decides
+// whether the sidebar shows at all; this file always builds the panel for
+// the active tab. One of the four chrome modules (Agent C).
+//
+// API notes (verified against mygo v0.6.4 source):
+//   - ui.List(c, state, n) + .ItemKey + .Rows is the virtualized list: row
+//     callbacks run only for visible rows, which is what makes the lazy
+//     thumbnail requests cheap. The ListState must persist per tab (scroll
+//     position), so it lives in a package map keyed by tab ID.
+//   - ui.Tree + ui.TreeItem(label, open *bool, children) is the outline
+//     tree; OnClick on the item reports choosing it after the build pass.
+//     Open/closed state lives in a package map keyed by tab and node path.
+//   - ui.NewBitmap(img) converts an *image.RGBA once; Bitmap.Update swaps
+//     pixels in place on the UI thread (both called here only from the
+//     view, never from the render worker).
+//   - RenderAsync callbacks run on the pdf.Doc worker goroutine: they only
+//     touch the thread-safe pdf.PageCache and hop to the UI thread via
+//     update, re-checking tab liveness there (state.go threading rules).
+package app
+
+import (
+	"fmt"
+	"image"
+	"strings"
+
+	"github.com/egoist/mygo/ui"
+	"gopdf/internal/pdf"
+)
+
+// Thumbnail panel geometry (DIPs).
+const (
+	thumbRowHeight = 148
+	thumbHeight    = 120
+	thumbMaxWidth  = 168
+)
+
+// Per-tab chrome state, kept out of AppState (which stores plain data only:
+// state.go forbids ui values there). Every map is touched on the UI thread
+// only (view builds) and pruned lazily for closed tabs.
+var (
+	thumbLists      = map[string]*ui.ListState{}  // tab → thumbnail list scroll state
+	thumbGens       = map[string]int{}            // tab → ReloadGen the requested set was built for
+	thumbsRequested = map[string]map[int]bool{}   // tab → pages with a render in flight
+	thumbLastPage   = map[string]int{}            // tab → last CurPage scrolled into view
+	thumbBitmaps    = map[thumbKey]*thumbBitmap{} // (tab, page) → ui bitmap
+	thumbOrder      []thumbKey                    // bitmap insertion order, for the cap
+	outlineOpen     = map[string]*bool{}          // "tabID|path" → expanded
+)
+
+type thumbKey struct {
+	tabID string
+	page  int
+}
+
+// thumbBitmap pairs a ui.Bitmap with the image it was built from, so a
+// re-render can Update it in place instead of allocating a new Bitmap
+// ("Create it once: converting an image is not free").
+type thumbBitmap struct {
+	bmp *ui.Bitmap
+	img *image.RGBA
+}
+
+// sidebar renders the panel: a Thumbnails/Outline switch, then the panel
+// of the active tab. Doc-less tabs show placeholders and never panic.
+func sidebar(c *ui.Context, s *AppState) {
+	th := c.Theme()
+	pruneChromeState(s)
+	ui.Column(c).Width(SidebarWidth).FillHeight().Children(func() {
+		// The bound *int writes s.SidebarTab directly; the segmented shows
+		// only while the sidebar is visible, so SetSidebarTab's
+		// ShowSidebar=true has no extra effect here.
+		ui.Segmented(c, (*int)(&s.SidebarTab), "Thumbnails", "Outline")
+		t := s.Active()
+		if t == nil {
+			ui.Text(c, "No document open").TextColor(th.TextMuted).FontSize(13)
+			return
+		}
+		if s.SidebarTab == SidebarOutline {
+			outlinePanel(c, t)
+			return
+		}
+		thumbsPanel(c, s, t)
+	})
+}
+
+// ---- Thumbnails ---------------------------------------------------------
+
+// thumbsPanel is the virtualized thumbnail list of pages 0..NumPages-1.
+func thumbsPanel(c *ui.Context, s *AppState, t *Tab) {
+	if t.NumPages <= 0 {
+		ui.Text(c, "No pages").FontSize(13)
+		return
+	}
+	lst := thumbLists[t.ID]
+	if lst == nil {
+		lst = &ui.ListState{}
+		thumbLists[t.ID] = lst
+	}
+	// Follow the viewer's current page: scroll there once per change.
+	if thumbLastPage[t.ID] != t.CurPage {
+		thumbLastPage[t.ID] = t.CurPage
+		lst.ScrollIntoView(t.CurPage)
+	}
+	ui.List(c, lst, t.NumPages).
+		ItemKey(func(i int) any { return i }). // row identity = page number
+		Fill().
+		Rows(func(r ui.ListRow) { thumbRow(c, s, t, r.Index) })
+}
+
+// thumbRow is one page: a small page surface (aspect from PageSizePt) with
+// its page number, the current page ringed in the accent color. The image
+// comes from Tab.Cache; a miss kicks off one 72 DPI render — only for rows
+// the list actually builds, i.e. visible ones.
+func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
+	th := c.Theme()
+	key := pdf.CacheKey{Page: p, DPI: pdf.ThumbDPI, Rotate: 0}
+	var img *image.RGBA
+	if t.Cache != nil {
+		img = t.Cache.Get(key)
+	}
+	if img == nil {
+		requestThumb(s, t, p, key)
+	}
+
+	w, h := thumbSize(t, p)
+	row := ui.ButtonBase(c).
+		Height(thumbRowHeight).Grow(1).
+		Gap(th.Space(1)).AlignItems(ui.Center).
+		Cursor(ui.CursorPointer)
+	row.Label(fmt.Sprintf("Page %d", p+1))
+	if p == t.CurPage {
+		row.Border(2, th.Accent).Radius(th.Space(1))
+	}
+	row.Children(func() {
+		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).Background(th.Surface)
+		if img != nil {
+			surface.Children(func() {
+				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h)
+			})
+		} else {
+			surface.Border(1, th.Border)
+		}
+		num := ui.Textf(c, "%d", p+1).FontSize(11)
+		if p != t.CurPage {
+			num.TextColor(th.TextMuted)
+		}
+	})
+	row.OnClick(func() { t.Navigate(p, 0) })
+}
+
+// thumbSize returns the on-screen size of page p from its rotated page
+// size, capped to the panel. Without a document it assumes US Letter.
+func thumbSize(t *Tab, p int) (w, h float32) {
+	pw, ph := 612.0, 792.0
+	if t.Doc != nil {
+		pw, ph = t.PageSizePt(p)
+	}
+	if pw <= 0 || ph <= 0 {
+		pw, ph = 612, 792
+	}
+	h = thumbHeight
+	w = float32(pw / ph * float64(h))
+	if w > thumbMaxWidth {
+		w = thumbMaxWidth
+		h = w * float32(ph/pw)
+	}
+	return w, h
+}
+
+// requestThumb asks the doc worker for one thumbnail, at most once per
+// (tab, reload generation, page). The callback stores into the thread-safe
+// cache and hops to the UI thread to ask for a frame, re-checking there
+// that the tab is still open (state.go threading rules).
+func requestThumb(s *AppState, t *Tab, p int, key pdf.CacheKey) {
+	if t.Doc == nil || t.Cache == nil {
+		return
+	}
+	if thumbGens[t.ID] != t.ReloadGen {
+		thumbsRequested[t.ID] = map[int]bool{} // Reload cleared the cache
+		thumbGens[t.ID] = t.ReloadGen
+	}
+	req := thumbsRequested[t.ID]
+	if req[p] {
+		return
+	}
+	req[p] = true
+
+	id := t.ID
+	doc, cache := t.Doc, t.Cache
+	doc.RenderAsync(pdf.RenderReq{Page: p, DPI: pdf.ThumbDPI, Rotate: 0, Kind: pdf.KindThumb},
+		func(img *image.RGBA, err error) {
+			if err != nil || img == nil {
+				return
+			}
+			cache.Put(key, img) // worker goroutine; PageCache is thread-safe
+			update(func() {     // UI thread: refresh while the tab is still open
+				for _, cur := range s.Tabs {
+					if cur.ID == id {
+						return // found: Window.Update has already asked a frame
+					}
+				}
+			})
+		})
+}
+
+// thumbBitmapFor returns the ui.Bitmap of a rendered thumbnail, creating
+// or updating it on the UI thread. The cache is capped at ~200 entries;
+// full-resolution images live in pdf.PageCache, not here.
+func thumbBitmapFor(t *Tab, p int, img *image.RGBA) *ui.Bitmap {
+	k := thumbKey{t.ID, p}
+	if e := thumbBitmaps[k]; e != nil {
+		if e.img != img { // re-rendered (reload, …): swap the pixels in place
+			e.bmp.Update(img)
+			e.img = img
+		}
+		return e.bmp
+	}
+	e := &thumbBitmap{bmp: ui.NewBitmap(img), img: img}
+	thumbBitmaps[k] = e
+	thumbOrder = append(thumbOrder, k)
+	for len(thumbOrder) > 200 {
+		delete(thumbBitmaps, thumbOrder[0])
+		thumbOrder = thumbOrder[1:]
+	}
+	return e.bmp
+}
+
+// ---- Outline ------------------------------------------------------------
+
+// outlinePanel renders t.Outline as a tree; -1 pages are muted and dead.
+func outlinePanel(c *ui.Context, t *Tab) {
+	if len(t.Outline) == 0 {
+		ui.Text(c, "No outline").TextColor(c.Theme().TextMuted).FontSize(13)
+		return
+	}
+	ui.Scroll(c).Fill().Children(func() {
+		ui.Tree(c, func() { walkOutline(c, t, t.Outline, "o") })
+	})
+}
+
+// walkOutline builds one level of the tree. path identifies each node
+// stably across builds for its open/closed state.
+func walkOutline(c *ui.Context, t *Tab, nodes []pdf.OutlineNode, path string) {
+	th := c.Theme()
+	for i, n := range nodes {
+		p := fmt.Sprintf("%s/%d", path, i)
+		label := n.Title
+		if label == "" {
+			label = "(untitled)"
+		}
+		var open *bool
+		if len(n.Children) > 0 {
+			key := t.ID + "|" + p
+			open = outlineOpen[key]
+			if open == nil {
+				open = new(bool)
+				outlineOpen[key] = open
+			}
+		}
+		it := ui.TreeItem(c.Key(p), label, open, func() {
+			walkOutline(c, t, n.Children, p)
+		})
+		if n.Page < 0 {
+			it.TextColor(th.TextMuted) // no target: grayed, not navigable
+			continue
+		}
+		page := n.Page
+		it.OnClick(func() { t.Navigate(page, 0) })
+	}
+}
+
+// ---- bookkeeping --------------------------------------------------------
+
+// pruneChromeState drops per-tab chrome state of closed tabs, lazily (the
+// maps are small; the sweep runs only once they grow).
+func pruneChromeState(s *AppState) {
+	if len(thumbBitmaps) > 400 {
+		live := tabIDSet(s)
+		for k := range thumbBitmaps {
+			if !live[k.tabID] {
+				delete(thumbBitmaps, k)
+			}
+		}
+		for i := 0; i < len(thumbOrder); {
+			if live[thumbOrder[i].tabID] {
+				i++
+				continue
+			}
+			thumbOrder = append(thumbOrder[:i], thumbOrder[i+1:]...)
+		}
+	}
+	if len(thumbLists) > 64 {
+		pruneByTabID(thumbLists, s)
+		pruneByTabID(thumbsRequested, s)
+		pruneByTabID(thumbGens, s)
+		pruneByTabID(thumbLastPage, s)
+		pruneByTabScoped(outlineOpen, s)
+	}
+}
+
+// tabIDSet returns the ids of the open tabs.
+func tabIDSet(s *AppState) map[string]bool {
+	out := make(map[string]bool, len(s.Tabs))
+	for _, t := range s.Tabs {
+		out[t.ID] = true
+	}
+	return out
+}
+
+// pruneByTabID deletes map entries keyed by a bare tab ID of closed tabs.
+func pruneByTabID[T any](m map[string]T, s *AppState) {
+	live := tabIDSet(s)
+	for id := range m {
+		if !live[id] {
+			delete(m, id)
+		}
+	}
+}
+
+// pruneByTabScoped deletes map entries keyed "tabID|…" of closed tabs.
+func pruneByTabScoped[T any](m map[string]T, s *AppState) {
+	live := tabIDSet(s)
+	for id := range m {
+		tab, _, ok := strings.Cut(id, "|")
+		if !ok || !live[tab] {
+			delete(m, id)
+		}
+	}
+}

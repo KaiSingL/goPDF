@@ -1,0 +1,32 @@
+// view.go is the root view (module B). It composes the whole window from
+// the components, in the order the map in components.go prescribes:
+// shortcuts first so they are window-scoped, then the chrome, then the
+// content row, and the palette overlay last so it draws above everything.
+package app
+
+import "github.com/egoist/mygo/ui"
+
+// View builds the window's interface from state. MyGo calls it on the main
+// thread whenever a frame is due.
+func (s *AppState) View(c *ui.Context) {
+	shortcuts(c, s) // D: app-wide keyboard bindings, window scope (first)
+
+	// Fill the window: the chrome bars take their natural height and the
+	// content row grows into the rest.
+	ui.Column(c).Fill().Children(func() {
+		tabBar(c, s)  // C: browser-style tab strip
+		toolbar(c, s) // C: back/forward, reload, search, zoom
+
+		// Content: sidebar (C) beside the page area (B), which fills the
+		// rest.
+		ui.Row(c).Fill().Grow(1).Children(func() {
+			if s.ShowSidebar {
+				sidebar(c, s) // C: thumbnails / outline, SidebarWidth wide
+			}
+			viewer(c, s) // B: the scrollable page area
+		})
+
+		statusBar(c, s)      // C: page X/Y, fit mode, zoom, theme toggle
+		paletteOverlay(c, s) // D: Ctrl+K palette, drawn above everything
+	})
+}

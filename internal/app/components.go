@@ -25,7 +25,6 @@ package app
 
 import (
 	"github.com/egoist/mygo"
-	"github.com/egoist/mygo/ui"
 )
 
 // window is the main window, set by main.go (D) immediately after creation.
@@ -54,67 +53,7 @@ func update(fn func()) {
 // Update is the exported variant of update for package main.
 func Update(fn func()) { update(fn) }
 
-// ---- B, viewer.go ------------------------------------------------------
-// viewer renders the scrollable page area for the active tab: requests
-// page renders through Doc.RenderAsync, caches bitmaps, applies zoom/fit/
-// rotation with a 150ms debounced re-render at the settled DPI, tracks the
-// current page from scroll position, draws search-hit highlight rectangles
-// scaled by dpi/72, and centers pages (max width 900 DIPs) with shadow.
-func viewer(c *ui.Context, s *AppState) {}
-
-// ---- C, tabs.go --------------------------------------------------------
-// tabBar renders the tab strip: one tab per s.Tabs (title, close button,
-// active state), a "+" button calling openFilePicker, double-click on empty
-// strip space also opening the picker, and middle-click/Close on a tab
-// calling s.CloseTab. Keep stable keys: c.Key(t.ID).
-func tabBar(c *ui.Context, s *AppState) {}
-
-// ---- C, toolbar.go -----------------------------------------------------
-// toolbar renders the second bar: back/forward (enabled from Tab.History/
-// Future, calling Tab.Back/Forward), reload (Tab.Reload), a search field
-// bound to the active tab's Search.Query (submit → s.StartSearch + s.
-// RunSearch; Enter/F3 → s.StepSearch(+1), Shift+F3/Enter → -1), zoom out /
-// percent display / zoom in (Tab.ZoomOut / ZoomPercent / ZoomIn), a zoom
-// mode control (Tab.SetZoomMode), share + comment buttons (disabled, v1)
-// and a more menu (rotate, sidebar toggle, palette).
-func toolbar(c *ui.Context, s *AppState) {}
-
-// ---- C, sidebar.go -----------------------------------------------------
-// sidebar renders the left panel when s.ShowSidebar: a Thumbnails/Outline
-// switch (s.SetSidebarTab), then either the virtualized thumbnail list
-// (lazy 72 DPI renders via Doc.RenderAsync + Tab.Cache, current page
-// highlighted, click → Tab.Navigate) or the outline tree from Tab.Outline
-// (click → Tab.Navigate; -1 pages disabled).
-func sidebar(c *ui.Context, s *AppState) {}
-
-// ---- C, statusbar.go ---------------------------------------------------
-// statusBar renders the bottom bar: "Page X of Y" with an editable page
-// number (submit → Tab.Navigate), the fit mode, zoom percent, a dark-mode
-// toggle (toggleTheme) and the app title on empty state.
-func statusBar(c *ui.Context, s *AppState) {}
-
-// ---- D, shortcuts.go ---------------------------------------------------
-// shortcuts declares the app-wide keyboard bindings for the current window
-// scope (Ctrl+O/W/T, Ctrl+Shift+T, Ctrl+F search focus, Ctrl +/-/= and 0,
-// PageUp/Down, Home/End, Ctrl+K palette, F3 / Shift+F3, Escape). The root
-// view (B, view.go) calls shortcuts(c, s) FIRST so they are in scope for
-// the whole window. Use handle.OnShortcut / c.OnShortcut per the
-// mygo-maintenance skill.
-func shortcuts(c *ui.Context, s *AppState) {}
-
-// ---- D, palette.go -----------------------------------------------------
-// paletteOverlay renders the Ctrl+K command palette over the UI when
-// s.ShowPalette: a query field and results for recent documents
-// (s.Recents → s.OpenTab), outline entries of the active tab (→ Navigate),
-// "page N" number jump, and commands (zoom in/out/reset, rotate, toggle
-// sidebar, toggle theme, close tab). Escape/selection closes it.
-func paletteOverlay(c *ui.Context, s *AppState) {}
-
-// ---- D, shortcuts.go / actions -----------------------------------------
-// openFilePicker shows the system open dialog (PDF filter) and opens the
-// chosen file with s.OpenTab (+ App.AddRecentDocument).
-func openFilePicker() {}
-
-// toggleTheme flips the manual theme override (auto → dark → light → auto)
-// and applies it immediately.
-func toggleTheme() {}
+// ---- C, tabs.go / toolbar.go / sidebar.go / statusbar.go ---------------
+// Implemented in tabs.go (tab strip), toolbar.go (nav / search / zoom
+// controls), sidebar.go (thumbnails + outline) and statusbar.go (page X/Y,
+// fit, zoom, theme toggle) by Agent C.

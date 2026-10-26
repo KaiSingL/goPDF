@@ -2,5 +2,12 @@
   "name": "GoPDF",
   "identifier": "com.example.gopdf",
   "version": "0.1.0",
-  "out": "build"
+  "out": "build",
+  "fileAssociations": [
+    {
+      "ext": ["pdf"],
+      "name": "PDF Document",
+      "role": "Viewer"
+    }
+  ]
 }

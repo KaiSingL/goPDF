@@ -222,7 +222,9 @@ func (s *AppState) CloseTab(id string) {
 	}
 	t := s.Tabs[idx]
 	s.Tabs = append(s.Tabs[:idx], s.Tabs[idx+1:]...)
-	t.Doc.Close()
+	if t.Doc != nil { // Doc-less tabs (failed open, tests) close without a panic
+		t.Doc.Close()
+	}
 	s.ClosedPaths = append([]string{t.Path}, s.ClosedPaths...)
 	if len(s.ClosedPaths) > 16 {
 		s.ClosedPaths = s.ClosedPaths[:16]
@@ -372,6 +374,9 @@ func (t *Tab) Reload() {
 // to the first hit. Call from the UI thread after StartSearch/bind changes.
 func (s *AppState) RunSearch(t *Tab) {
 	if t == nil || t.Doc == nil {
+		if t != nil {
+			t.Search.Running = false // nothing to search; don't spin forever
+		}
 		return
 	}
 	q := t.Search.Query
