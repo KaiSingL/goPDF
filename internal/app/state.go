@@ -82,6 +82,9 @@ type Tab struct {
 	// Cache holds rendered page images; thread-safe (see pdf.PageCache).
 	Cache *pdf.PageCache
 
+	// ReloadGen increments on Reload; the viewer re-renders when it changes.
+	ReloadGen int
+
 	index *pdf.Index // set on the UI thread by SetIndex after IndexAsync
 }
 
@@ -346,6 +349,61 @@ func (t *Tab) ZoomPercent() string { return fmt.Sprintf("%.0f%%", t.Zoom*100) }
 // RotateBy rotates the view 90° clockwise.
 func (t *Tab) RotateBy() {
 	t.Rotate = (t.Rotate + 90) % 360
+}
+
+// Reload invalidates the tab's rendered images; the viewer re-renders the
+// visible pages when ReloadGen changes.
+func (t *Tab) Reload() {
+	if t.Cache != nil {
+		t.Cache.Clear()
+	}
+	t.ReloadGen++
+}
+
+// RunSearch executes the tab's current query: it builds the text index (on
+// the doc worker) if needed, fills t.Search.Hits on the UI thread and jumps
+// to the first hit. Call from the UI thread after StartSearch/bind changes.
+func (s *AppState) RunSearch(t *Tab) {
+	if t == nil || t.Doc == nil {
+		return
+	}
+	q := t.Search.Query
+	t.Search.Running = q != ""
+	if q == "" {
+		t.Search.Hits = nil
+		t.Search.Current = -1
+		return
+	}
+	t.Doc.IndexAsync(func(ix *pdf.Index, err error) {
+		var hits []pdf.SearchHit
+		if err == nil {
+			hits = ix.Search(q)
+		}
+		update(func() { // hop to the UI thread; see components.go
+			cur := s.Active()
+			if cur == nil || cur.ID != t.ID || cur.Search.Query != q {
+				return // stale: tab closed or query changed
+			}
+			cur.SetIndex(ix)
+			cur.Search.Hits = hits
+			cur.Search.Running = false
+			cur.Search.Current = -1
+			if page, _, ok := cur.GotoHit(1); ok { // land on the first hit
+				cur.Navigate(page, 0)
+			}
+		})
+	})
+}
+
+// StepSearch moves to the next (+1) or previous (-1) hit and navigates the
+// tab to it. Call from the UI thread.
+func (s *AppState) StepSearch(t *Tab, delta int) {
+	if t == nil {
+		return
+	}
+	if page, _, ok := t.GotoHit(delta); ok {
+		t.Navigate(page, 0)
+	}
 }
 
 // FitZoom computes the zoom factor for the current page and fit mode,
