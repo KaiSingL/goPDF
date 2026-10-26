@@ -10,8 +10,13 @@ and [MuPDF](https://mupdf.com) through [go-fitz](https://github.com/gen2brain/go
 
 ## Status
 
-Under active development — see [PLAN.md](PLAN.md) for the build plan and
-[Modern-Pdf-Spec.md](Modern-Pdf-Spec.md) for the product spec.
+**v0.1.0 MVP complete** — tabs, continuous page viewer (fit width/page/custom 25–400%,
+rotate), virtualized thumbnail sidebar + outline tree, in-document search with
+highlight overlays, Ctrl+K command palette, back/forward history, single instance,
+file associations + drag-drop + recents, dark mode, persisted settings. See
+[PLAN.md](PLAN.md) for the build plan and [Modern-Pdf-Spec.md](Modern-Pdf-Spec.md)
+for the product spec. Measured: 100-page doc opens in 23–33 ms, first 150-DPI
+render 37–58 ms.
 
 ## Development
 

@@ -1,5 +1,16 @@
 # Modern PDF Reader — Development Plan
 
+> **STATUS: v0.1.0 MVP COMPLETE** (built by 4 parallel GLM-5.3-Flash agents + lead integration).
+> All gates green: `go build`/`vet`/`gofmt` clean, `go test -race ./...` 40+ tests pass,
+> app launches with window, single-instance lock verified. Key deviations discovered during
+> the build (all verified against pinned mygo v0.6.4 source):
+> - Render DPI = `96·zoom·deviceScale` (not 72·…: page DIPs are pt·96/72·z, so 96 is pixel-exact)
+> - MuPDF 1.28 stext HTML format: `<p style="top;left;line-height">` with NO width — span width estimated 0.55em/char
+> - `ui.SearchField`'s FocusBind targets the wrapper (can't receive text) → toolbar composes `TextInputBase`
+> - Scroll virtualization needs exact-height spacers (content is sized from built children only)
+> - Windows menu accelerators fire before the view; `Theme.SetSource` off-main pre-Run deadlocks
+> - `mygo.NewDocuments` unusable for a tabbed reader (window-per-doc) — plain `OnOpenFile` used
+
 Execution plan for `Modern-Pdf-Spec.md`, verified against the real MyGo (v0.6.4) and
 go-fitz toolchains on this machine (Windows 11, x64).
 
