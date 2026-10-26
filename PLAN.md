@@ -36,32 +36,35 @@ and MuPDF/go-fitz is **AGPL-3.0** — the reader must ship AGPL (fine per spec �
 
 ## 2. Architecture
 
+Module `gopdf`, app root `C:\dev\goPDF` (no extra nesting):
+
 ```
-modern-pdf/
+C:\dev\goPDF\
 ├─ main.go                 [D] lifecycle, single instance, menus, file assoc events, window
+├─ main_test.go            [D] headless smoke of the shell
 ├─ mygo.json               [D] name/identifier/fileAssociations(pdf)
+├─ cmd/smoke/              [lead] toolchain + perf smoke test (fitz end-to-end)
 ├─ internal/pdf/           [A] NO mygo imports — pure Go + go-fitz + stdlib (testable headless)
-│  ├─ doc.go               Document: open, NumPages, PageSize, Render(page,dpi,rotate)→*image.RGBA,
-│  │                       Text(page)→structured, Outline()→[]Node, per-goroutine fitz contexts
-│  ├─ pool.go              render worker pool: request queue, cancellation, N=2 fitz.Docs
-│  ├─ cache.go             LRU of rendered pages (key: page,dpi,rotate) + thumbnail cache @72dpi
-│  ├─ search.go            per-page text index, Search(query)→hits with page+rects, run async
-│  └─ *_test.go            tests against testdata/*.pdf (fitz concurrency rules respected)
+│  ├─ pdf.go               Doc: Open, worker goroutine threading model, RenderAsync, IndexAsync,
+│  │                       outline tree, page geometry, rotation; RenderReq/CacheKey/OutlineNode/TextSpan/SearchHit
+│  ├─ cache.go             PageCache: thread-safe LRU of rendered pages by pixel bytes
+│  ├─ search.go            Index: span extraction from MuPDF stext HTML + substring search with hit rects
+│  └─ *_test.go            tests against generated PDFs (gen_test.go)
 ├─ internal/app/           [B,C,D] MyGo ui code
-│  ├─ state.go             [lead] AppState, Tab, ZoomMode, contract action methods (stubbed)
-│  ├─ view.go              [B] root layout: titlebar / ui.Tabs / toolbar / sidebar+viewer / status
-│  ├─ viewer.go            [B] ui.ScrollView page strip, zoom (fit width/page/25–400%), rotate,
-│  │                       ctrl+wheel zoom, page tracking, debounced re-render, page shadow
-│  ├─ tabs.go              [C] tab bar (ui.Tabs styled), + button, close, reopen-closed, drag reorder
-│  ├─ toolbar.go           [C] nav back/forward, reload, search field (ui.FindBar in-viewer),
-│  │                       zoom controls, more menu, disabled share/comment
-│  ├─ sidebar.go           [C] ui.Sidebar 280px: virtualized thumbnails @72dpi + ui.Tree outline
-│  ├─ statusbar.go         [C] page X/Y, fit mode, zoom %, dark-mode toggle
-│  ├─ palette.go           [D] Ctrl+K overlay: recent docs, outline jump, page number
-│  ├─ shortcuts.go         [D] all spec §5 shortcuts
-│  ├─ theme.go             [D] dark/light tokens via c.Theme(), follow system
-│  ├─ settings.go          [D] persisted settings (JSON in App.PathUserData)
-│  └─ actions.go           [D] implements the action methods stubbed in state.go
+│  ├─ state.go             [lead] AppState, Tab, actions (frozen contract; UI-thread rules in header)
+│  ├─ components.go        [lead] cross-module seam: stub functions per module + window/update/Update,
+│  │                       SetWindow, SearchFocus; each owner deletes its stubs when implementing
+│  ├─ view.go              [B] root layout: shortcuts / tabBar / toolbar / sidebar+viewer / statusBar / paletteOverlay
+│  ├─ viewer.go            [B] scroll view, zoom/rotate/fit, page tracking, render wiring, highlights
+│  ├─ gen_test.go          [B] test-only PDF generator for package app tests
+│  ├─ tabs.go              [C] tab bar + close + "+" + reopen-closed
+│  ├─ toolbar.go           [C] nav back/forward, reload, search field (FocusBind←SearchFocus), zoom controls
+│  ├─ sidebar.go           [C] virtualized thumbnails @72dpi + outline tree
+│  ├─ statusbar.go         [C] page X/Y input, fit mode, zoom %, dark toggle
+│  ├─ palette.go           [D] Ctrl+K overlay: recent docs, outline jump, page jump, commands
+│  ├─ shortcuts.go         [D] all spec §5 shortcuts + openFilePicker
+│  ├─ theme.go             [D] theme mode cycle (auto/dark/light) via mygo theme API
+│  └─ settings.go          [D] persisted settings (JSON in user data dir)
 ```
 
 Rendering pipeline (spec §3 honored): UI thread never blocks on fitz. `pdf.Renderer`
