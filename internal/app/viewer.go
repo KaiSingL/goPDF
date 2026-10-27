@@ -440,13 +440,15 @@ func computeGeom(t *Tab, z float64) geom {
 }
 
 // pageDipSize is page's shown size in DIPs at zoom z: points scaled by
-// 96/72 * z, swapped for 90/270 rotation (Tab.PageSizePt does that), and
-// capped at maxPageW (spec §4).
+// 96/72 * z, swapped for 90/270 rotation (Tab.PageSizePt does that). The
+// maxPageW cap (spec §4's 900px reading column) applies to the automatic
+// fit modes only — an explicit zoom shows the page at exactly the asked
+// size (capping there froze all growth past ~110% on a letter page).
 func pageDipSize(t *Tab, page int, z float64) (w, h float32) {
 	pw, ph := t.PageSizePt(page)
 	wf := pw * dipPerPt * z
 	hf := ph * dipPerPt * z
-	if wf > float64(maxPageW) {
+	if t.ZoomMode != ZoomCustom && wf > float64(maxPageW) {
 		hf *= float64(maxPageW) / wf
 		wf = float64(maxPageW)
 	}

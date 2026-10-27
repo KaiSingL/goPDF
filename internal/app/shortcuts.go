@@ -54,9 +54,15 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(ui.Ctrl, ui.KeyMinus, zoomOut(s))
 	c.OnShortcut(ui.Ctrl, ui.Key0, zoomReset(s))
 
-	// Page turns and jumps.
+	// Page turns and jumps. Left/Right turn pages too: focused text inputs
+	// take the arrows first for the caret and focused tree items to
+	// open/close (editor.wants / arrows() in the pinned source), so these
+	// fire when the reader itself has the keyboard. Declaring the shortcut
+	// also claims the keys before the engine's arrow-to-scroll fallback.
 	c.OnShortcut(0, ui.KeyPageDown, nextPage(s))
 	c.OnShortcut(0, ui.KeyPageUp, prevPage(s))
+	c.OnShortcut(0, ui.KeyRight, nextPage(s))
+	c.OnShortcut(0, ui.KeyLeft, prevPage(s))
 	c.OnShortcut(0, ui.KeyHome, firstPage(s))
 	c.OnShortcut(0, ui.KeyEnd, lastPage(s))
 

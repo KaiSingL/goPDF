@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"image"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 	"gopdf/internal/pdf"
@@ -193,34 +194,45 @@ func thumbSize(t *Tab, p int) (w, h float32) {
 	return w, h
 }
 
+// thumbMu guards thumbsRequested and thumbGens: builds mark pages in
+// flight on the UI thread and the worker completion clears the mark, so
+// the two can overlap.
+var thumbMu sync.Mutex
+
 // requestThumb asks the doc worker for one thumbnail, at most once per
-// (tab, reload generation, page). The callback stores into the thread-safe
-// cache and hops to the UI thread to ask for a frame, re-checking there
-// that the tab is still open (state.go threading rules).
+// (tab, page) IN FLIGHT. The mark clears when the render completes — not
+// permanently — because the shared PageCache is an LRU: search jumps fill
+// it with full-page renders, evicted thumbnails must be re-requestable or
+// they stay blank forever.
 func requestThumb(s *AppState, t *Tab, p int, key pdf.CacheKey) {
 	if t.Doc == nil || t.Cache == nil {
 		return
 	}
+	thumbMu.Lock()
 	if thumbGens[t.ID] != t.ReloadGen {
 		thumbsRequested[t.ID] = map[int]bool{} // Reload cleared the cache
 		thumbGens[t.ID] = t.ReloadGen
 	}
 	req := thumbsRequested[t.ID]
 	if req == nil {
-		// First request for a fresh tab: thumbGens matched (both zero) so
-		// the reset branch above did not run. Without this, req[p]=true
-		// below panics on a nil map on the very first thumbnail build.
 		req = map[int]bool{}
 		thumbsRequested[t.ID] = req
 	}
 	if req[p] {
-		return
+		thumbMu.Unlock()
+		return // already in flight
 	}
 	req[p] = true
+	thumbMu.Unlock()
 
 	doc, cache := t.Doc, t.Cache
 	doc.RenderAsync(pdf.RenderReq{Page: p, DPI: pdf.ThumbDPI, Rotate: 0, Kind: pdf.KindThumb},
 		func(img *image.RGBA, err error) {
+			thumbMu.Lock()
+			if m := thumbsRequested[t.ID]; m != nil {
+				delete(m, p) // done: may be requested again after an eviction
+			}
+			thumbMu.Unlock()
 			if err != nil || img == nil {
 				return
 			}
@@ -350,8 +362,10 @@ func pruneChromeState(s *AppState) {
 	}
 	if len(thumbLists) > 64 {
 		pruneByTabID(thumbLists, s)
+		thumbMu.Lock()
 		pruneByTabID(thumbsRequested, s)
 		pruneByTabID(thumbGens, s)
+		thumbMu.Unlock()
 		pruneByTabID(thumbLastPage, s)
 		pruneByTabScoped(outlineOpen, s)
 	}

@@ -49,6 +49,7 @@ func paletteOverlay(c *ui.Context, s *AppState) {
 	if !palOpenSeen { // opened since the last build: start fresh
 		palOpenSeen = true
 		palQuery, palSel = "", 0
+		palList = ui.ListState{} // drop the scroll of the previous open
 		rebuildPalette(s)
 	}
 	ui.Modal(c, &s.ShowPalette, func() { palettePanel(c, s) })
@@ -80,6 +81,11 @@ func palettePanel(c *ui.Context, s *AppState) {
 		if len(palItems) == 0 {
 			ui.Text(c, "No matches").TextColor(t.TextMuted)
 			return
+		}
+		// The virtualized list only builds visible rows: keep the selected
+		// row among them as Up/Down and Home/End move it.
+		if palSel >= 0 {
+			palList.ScrollIntoView(palSel)
 		}
 		ui.List(c, &palList, len(palItems), func(i int) { palRow(c, s, t, i) }).Grow(1)
 	})
@@ -152,20 +158,28 @@ func palRun(s *AppState) {
 
 // rebuildPalette fills palItems for the current query. Empty queries list
 // the commands and the recents; matching is a fuzzy subsequence match.
+// Section headers are only added for sections with entries — orphan
+// headers made an unmatched query look like broken results.
 func rebuildPalette(s *AppState) {
 	q := strings.ToLower(strings.TrimSpace(palQuery))
-	items := make([]paletteItem, 0, 32)
-	add := func(it paletteItem) { items = append(items, it) }
+	palItems = nil // rebuild from scratch: package state survives closes
 	match := func(text string) bool {
 		_, ok := fuzzyScore(q, text)
 		return ok
 	}
+	addSection := func(name string, entries []paletteItem) {
+		if len(entries) == 0 {
+			return
+		}
+		palItems = append(palItems, paletteItem{section: name})
+		palItems = append(palItems, entries...)
+	}
 
 	// Commands.
-	add(paletteItem{section: "Commands"})
+	var cmds []paletteItem
 	cmd := func(label string, run func()) {
 		if match(label) {
-			add(paletteItem{section: "Commands", label: label, run: run})
+			cmds = append(cmds, paletteItem{section: "Commands", label: label, run: run})
 		}
 	}
 	cmd("Toggle Theme", toggleTheme)
@@ -191,12 +205,13 @@ func rebuildPalette(s *AppState) {
 		}
 	})
 	cmd("Close Tab", func() { s.CloseActiveTab() })
+	addSection("Commands", cmds)
 
 	// Pages: a "Page N" jump when the query is a number, and stepping.
-	add(paletteItem{section: "Pages"})
+	var pages []paletteItem
 	if n, err := strconv.Atoi(strings.TrimSpace(q)); err == nil && n >= 1 {
 		page := n
-		add(paletteItem{section: "Pages", label: "Page " + strconv.Itoa(page),
+		pages = append(pages, paletteItem{section: "Pages", label: "Page " + strconv.Itoa(page),
 			detail: "Go to page", run: func() {
 				if t := s.Active(); t != nil {
 					t.Navigate(page-1, 0)
@@ -204,7 +219,7 @@ func rebuildPalette(s *AppState) {
 			}})
 	}
 	if match("Next Page") {
-		add(paletteItem{section: "Pages", label: "Next Page", detail: "PageDown",
+		pages = append(pages, paletteItem{section: "Pages", label: "Next Page", detail: "PageDown",
 			run: func() {
 				if t := s.Active(); t != nil {
 					t.Navigate(t.CurPage+1, 0)
@@ -212,23 +227,24 @@ func rebuildPalette(s *AppState) {
 			}})
 	}
 	if match("Previous Page") {
-		add(paletteItem{section: "Pages", label: "Previous Page", detail: "PageUp",
+		pages = append(pages, paletteItem{section: "Pages", label: "Previous Page", detail: "PageUp",
 			run: func() {
 				if t := s.Active(); t != nil {
 					t.Navigate(t.CurPage-1, 0)
 				}
 			}})
 	}
+	addSection("Pages", pages)
 
 	// Outline of the active tab, flattened, page-less entries dropped.
-	add(paletteItem{section: "Outline"})
+	var outline []paletteItem
 	if t := s.Active(); t != nil {
 		for _, e := range flattenOutline(t.Outline, 0, maxPaletteOutline) {
 			if e.title == "" || !match(e.title) {
 				continue
 			}
 			page := e.page
-			add(paletteItem{section: "Outline", label: e.title,
+			outline = append(outline, paletteItem{section: "Outline", label: e.title,
 				detail: "Page " + strconv.Itoa(page+1), run: func() {
 					if cur := s.Active(); cur != nil {
 						cur.Navigate(page, 0)
@@ -236,20 +252,37 @@ func rebuildPalette(s *AppState) {
 				}})
 		}
 	}
+	addSection("Outline", outline)
 
 	// Recent documents.
-	add(paletteItem{section: "Recent Documents"})
+	var recents []paletteItem
 	for _, p := range s.Recents {
 		base := filepath.Base(p)
 		if !match(base) && !match(p) {
 			continue
 		}
 		path := p
-		add(paletteItem{section: "Recent Documents", label: base, detail: path,
+		recents = append(recents, paletteItem{section: "Recent Documents", label: base, detail: path,
 			run: func() { OpenPath(path) }})
 	}
+	addSection("Recent Documents", recents)
 
-	palItems = items
+	palSelectFirst()
+}
+
+// palSelectFirst puts the selection on the first runnable row: section
+// headers are not runnable, and Enter on the fresh selection must do
+// something — the old palSel=0 left it on a section header, so Ctrl+K,
+// type, Enter just closed the palette. -1 when nothing is runnable (which
+// with per-section headers means no items at all).
+func palSelectFirst() {
+	palSel = -1
+	for i, it := range palItems {
+		if it.run != nil {
+			palSel = i
+			return
+		}
+	}
 }
 
 // maxPaletteOutline caps how many outline entries the palette considers.
