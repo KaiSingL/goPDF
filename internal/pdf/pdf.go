@@ -116,8 +116,9 @@ type Doc struct {
 	sizes [][2]float64 // raw page size in points, per page
 	toc   []OutlineNode
 
-	fit    *fitz.Document // set by Open, read by Close after <-d.done
-	tasks  chan func(*fitz.Document)
+	fit    *fitz.Document            // set by Open, read by Close after <-d.done
+	hi     chan func(*fitz.Document) // page renders: latency-sensitive
+	lo     chan func(*fitz.Document) // thumbnails, index builds
 	closed atomic.Bool
 	done   chan struct{}
 
@@ -145,7 +146,8 @@ func Open(path string) (*Doc, error) {
 		id:    fmt.Sprintf("doc-%d", docSeq.Add(1)),
 		pages: fit.NumPage(),
 		meta:  trimMeta(fit.Metadata()),
-		tasks: make(chan func(*fitz.Document), 128),
+		hi:    make(chan func(*fitz.Document), 64),
+		lo:    make(chan func(*fitz.Document), 128),
 		done:  make(chan struct{}),
 	}
 	d.sizes = make([][2]float64, d.pages)
@@ -170,10 +172,21 @@ func Open(path string) (*Doc, error) {
 }
 
 // loop is the Doc's worker goroutine: the only goroutine that uses fit.
-// Tasks queued after Close are dropped; nil is the stop sentinel.
+// Tasks queued after Close are dropped; nil is the stop sentinel. Page
+// renders (the hi lane) run before thumbnails and index work (lo): a page
+// the user jumped to must not queue behind a wall of sidebar thumbnails.
 func (d *Doc) loop(fit *fitz.Document) {
 	defer close(d.done)
-	for task := range d.tasks {
+	for {
+		var task func(*fitz.Document)
+		select {
+		case task = <-d.hi: // a page render is waiting: it goes first
+		default:
+			select {
+			case task = <-d.hi:
+			case task = <-d.lo:
+			}
+		}
 		if task == nil {
 			// Stop must be checked first: Close sets closed BEFORE queueing
 			// nil, so a closed check in front would swallow the sentinel and
@@ -287,7 +300,13 @@ func (d *Doc) RenderAsync(req RenderReq, fn func(*image.RGBA, error)) {
 		}
 		return
 	}
-	d.tasks <- func(f *fitz.Document) {
+	// Page renders take the priority lane: they are what the user is
+	// looking at (far jumps must not queue behind sidebar thumbnails).
+	lane := d.lo
+	if req.Kind == KindPage {
+		lane = d.hi
+	}
+	lane <- func(f *fitz.Document) {
 		if d.closed.Load() || fn == nil {
 			return
 		}
@@ -322,7 +341,7 @@ func (d *Doc) IndexAsync(fn func(*Index, error)) {
 	if d.closed.Load() {
 		return
 	}
-	d.tasks <- func(f *fitz.Document) {
+	d.lo <- func(f *fitz.Document) {
 		d.ixMu.Lock()
 		if d.index != nil || d.closed.Load() {
 			ix := d.index
@@ -364,7 +383,7 @@ func (d *Doc) Close() {
 	// crashes in cgo (found by TestCloseIdempotent).
 	d.closeOnce.Do(func() {
 		d.closed.Store(true)
-		d.tasks <- nil
+		d.hi <- nil
 		<-d.done
 		_ = d.fit.Close()
 	})

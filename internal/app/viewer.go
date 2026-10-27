@@ -226,7 +226,10 @@ func viewer(c *ui.Context, s *AppState) {
 				AlignItems(ui.Center).Shrink(0).
 				Children(func() {
 					ui.Box(c).Height(topSpacer).Shrink(0)
-					for i := lo; i <= hi; i++ {
+					// Build outward from the current page so its render is
+					// requested FIRST on jumps — the visible page is what the
+					// user is waiting for, not its neighbors.
+					for _, i := range centerOut(lo, hi, t.CurPage) {
 						buildPage(c, s, t, i, g.boxes[i], renderZ, z)
 					}
 					ui.Box(c).Height(botSpacer).Shrink(0)
@@ -234,8 +237,9 @@ func viewer(c *ui.Context, s *AppState) {
 		})
 }
 
-// viewerEmpty is the viewer area with nothing to show: the drop hint when
-// no tab is open, a placeholder for broken or empty documents otherwise.
+// viewerEmpty is the viewer area with nothing to show: the drop hint for
+// no tab or a launcher tab (identical states: drop a PDF or click open),
+// a placeholder for empty documents otherwise.
 func viewerEmpty(c *ui.Context, s *AppState, t *Tab) {
 	th := c.Theme()
 	c.Key("gopdf-viewer-empty")
@@ -245,21 +249,20 @@ func viewerEmpty(c *ui.Context, s *AppState, t *Tab) {
 	}
 	e.Children(func() {
 		switch {
-		case t == nil:
+		case t == nil || t.IsEmpty():
 			ui.Text(c, "Drop a PDF anywhere").FontSize(24).Bold()
 			ui.Text(c, "or open one from the toolbar").TextColor(th.TextMuted)
 			if ui.PrimaryButton(c, "Open PDF…").Clicked() {
 				openFilePicker()
 			}
-		case t.Doc == nil:
-			ui.Textf(c, "“%s” could not be displayed.", t.Title).TextColor(th.TextMuted)
 		default:
 			ui.Text(c, "This document has no pages.").TextColor(th.TextMuted)
 		}
 	})
 }
 
-// openDropped opens the first dropped PDF in a new tab.
+// openDropped opens the first dropped PDF in a new tab. Launcher tabs are
+// closed by OpenTab itself, so a drop on a New Tab page replaces it.
 func openDropped(s *AppState, paths []string) {
 	for _, p := range paths {
 		if strings.EqualFold(filepath.Ext(p), ".pdf") {
@@ -375,6 +378,20 @@ func pageBitmap(t *Tab, i int, renderZ, z float64) *ui.Bitmap {
 	if e != nil {
 		return e.bm
 	}
+	// Nothing rendered for this zoom yet — an upscaled 72-DPI thumbnail
+	// gives instant (soft) feedback on far jumps while the full render is
+	// on its way; the real render replaces it when it lands. Reads a thumb
+	// the sidebar rendered (rotate 0 only: rotated views keep the text
+	// placeholder rather than a sideways preview).
+	if t.Rotate == 0 {
+		if img := t.Cache.Get(pdf.CacheKey{Page: i, DPI: pdf.ThumbDPI, Rotate: 0}); img != nil {
+			bm := ui.NewBitmap(img)
+			viewerMu.Lock()
+			bmpPut(k, bm, -1) // -1 tags the placeholder; e.dpi != dpi replaces it
+			viewerMu.Unlock()
+			return bm
+		}
+	}
 	return nil
 }
 
@@ -453,6 +470,30 @@ func pageDipSize(t *Tab, page int, z float64) (w, h float32) {
 		wf = float64(maxPageW)
 	}
 	return float32(wf), float32(hf)
+}
+
+// centerOut returns lo..hi ordered outward from center: center itself,
+// then center+1, center-1, … so the current page's render request goes to
+// the worker before its neighbors'.
+func centerOut(lo, hi, center int) []int {
+	n := hi - lo + 1
+	if n <= 0 {
+		return nil
+	}
+	out := make([]int, 0, n)
+	seen := make([]bool, n)
+	add := func(i int) {
+		if i >= lo && i <= hi && !seen[i-lo] {
+			seen[i-lo] = true
+			out = append(out, i)
+		}
+	}
+	add(center)
+	for off := 1; len(out) < n; off++ {
+		add(center + off)
+		add(center - off)
+	}
+	return out
 }
 
 // visibleRange returns the pages [lo, hi] to build: those overlapping the

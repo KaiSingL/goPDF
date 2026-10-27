@@ -87,20 +87,23 @@ func TestViewerEmptyStateHint(t *testing.T) {
 func TestViewerNilDocPlaceholder(t *testing.T) {
 	resetViewer()
 	s := NewAppState()
-	s.Tabs = append(s.Tabs, &Tab{ID: "t1", Title: "broken.pdf", NumPages: 3})
+	s.Tabs = append(s.Tabs, &Tab{ID: "t1", Title: "New Tab", NumPages: 3})
 	s.ActiveTab = 0
 	tt := ui.NewTester(s.View, 900, 640)
-	if !tt.HasText("could not be displayed") {
+	// Doc-less tabs are launcher tabs now (a failed open never creates a
+	// tab): they show the drop hint, like the no-tab empty state.
+	if !tt.HasText("Drop a PDF anywhere") {
 		t.Fatalf("placeholder texts = %q", tt.Texts())
 	}
 	tt.Frame()
 	tt.Frame()
 
-	// A tab without pages keeps the placeholder (no panic on zero pages).
+	// A tab without pages keeps a placeholder (no panic on zero pages).
+	// Doc-less stays a launcher tab; the drop hint persists.
 	s.Tabs[0].NumPages = 0
 	tt.Frame()
 	tt.Frame()
-	if !tt.HasText("could not be displayed") {
+	if !tt.HasText("Drop a PDF anywhere") {
 		t.Fatalf("texts with zero pages = %q", tt.Texts())
 	}
 }

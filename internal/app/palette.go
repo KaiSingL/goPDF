@@ -67,7 +67,10 @@ func palettePanel(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyHome, func() { palSel = 0; palSkipHeader(+1) })
 	c.OnShortcut(0, ui.KeyEnd, func() { palSel = len(palItems) - 1; palSkipHeader(-1) })
 
-	ui.Column(c).Width(640).MaxHeight(420).Gap(t.Space(2)).Children(func() {
+	// Column has a fixed height so the results list has a bounded box to
+	// virtualize and scroll in — with only MaxHeight the column clamps
+	// after measuring the content and the list never scrolls.
+	ui.Column(c).Width(640).Height(420).Gap(t.Space(2)).Children(func() {
 		c.Key("palette-query")
 		in := ui.TextInput(c, &palQuery).
 			Placeholder("Search commands, pages, outline, recent documents…").AutoFocus()

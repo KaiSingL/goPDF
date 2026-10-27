@@ -164,6 +164,16 @@ func (s *AppState) OpenTab(path string) (*Tab, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A real document replaces leftover launcher tabs ("+ then opened a
+	// file" should not strand New Tab pages, as browsers' new-tab pages).
+	live := s.Tabs[:0]
+	for _, existing := range s.Tabs {
+		if existing.IsEmpty() && existing.ID != "" {
+			continue
+		}
+		live = append(live, existing)
+	}
+	s.Tabs = live
 	title := filepath.Base(doc.Path())
 	if e := doc.Meta()["title"]; e != "" {
 		title = e
@@ -206,6 +216,24 @@ func (s *AppState) SelectTabBy(id string) {
 		}
 	}
 }
+
+// NewEmptyTab appends and activates a launcher tab: no document, the
+// viewer shows the drop hint with an Open button (the "+" in the tab bar,
+// spec §4 updated). Opening a real document closes leftover empty tabs.
+func (s *AppState) NewEmptyTab() *Tab {
+	t := &Tab{
+		ID:       fmt.Sprintf("tab-%d", tabSeq.Add(1)),
+		Title:    "New Tab",
+		Zoom:     1.0,
+		ZoomMode: s.Settings.DefaultZoomMode,
+	}
+	s.Tabs = append(s.Tabs, t)
+	s.ActiveTab = len(s.Tabs) - 1
+	return t
+}
+
+// IsEmpty reports a launcher tab: no document behind it.
+func (t *Tab) IsEmpty() bool { return t != nil && t.Doc == nil }
 
 // CloseTab removes a tab by id, releases its document, and records its path
 // for reopen-closed-tab. Returns the tab that should be active afterwards.

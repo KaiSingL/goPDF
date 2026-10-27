@@ -47,22 +47,22 @@ const (
 )
 
 // tabBar renders the tab strip: one tab per s.Tabs (title, close button,
-// active state), a "+" button calling openFilePicker, double-click on empty
-// strip space also opening the picker, and middle-click/Close on a tab
-// calling s.CloseTab.
+// active state), a "+" button opening a launcher tab (drop files or click
+// open, like the empty state), double-click on empty strip space doing the
+// same, and middle-click/Close on a tab calling s.CloseTab.
 func tabBar(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	ui.Row(c).Height(tabBarHeight).PaddingX(th.Space(2)).Gap(th.Space(0.5)).AlignItems(ui.Center).Children(func() {
 		for _, t := range s.Tabs {
 			tabButton(c, s, t)
 		}
-		plus := ui.Button(c, "").Label("New tab").Tooltip("Open a PDF")
+		plus := ui.Button(c, "").Label("New tab").Tooltip("Open a launcher tab: drop a PDF or click open")
 		plus.Children(func() { ui.Icon(c, chromeIcons.plus).FontSize(16) })
-		plus.OnClick(openFilePicker)
-		// The rest of the strip: double-click opens the picker (spec §4).
+		plus.OnClick(func() { s.NewEmptyTab() })
+		// The rest of the strip: double-click opens a launcher tab too.
 		rest := ui.Box(c).Grow(1).Height(tabBarHeight)
 		if rest.DoubleClicked() {
-			openFilePicker()
+			s.NewEmptyTab()
 		}
 	})
 }
@@ -80,19 +80,18 @@ func tabButton(c *ui.Context, s *AppState, t *Tab) {
 		Cursor(ui.CursorDefault)
 	switch {
 	case active:
-		b.Background(th.Surface)
+		// The active tab is an accent-tinted surface (matching the
+		// Thumbnails/Outline switch), not a top accent bar.
+		b.Background(th.Accent.Alpha(0.15))
 	case b.Hovered():
 		b.Background(th.SurfaceHover)
 	}
-	if active { // accent line along the top edge, browser-style
-		b.DrawOver(func(p *ui.Painter, r ui.Rect) {
-			in := th.Space(2)
-			p.Fill(ui.Rect{X: r.X + in, Y: r.Y + 1, W: r.W - 2*in, H: 2}, th.Accent, 1)
-		})
-	}
 	b.Children(func() {
 		title := ui.Text(c, t.Title).SingleLine().Ellipsis("…").MaxWidth(titleMaxWide).FontSize(12)
-		if !active {
+		switch {
+		case active:
+			title.TextColor(th.Accent)
+		default:
 			title.TextColor(th.TextMuted)
 		}
 		x := ui.ButtonBase(c).
