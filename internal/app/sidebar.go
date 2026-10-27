@@ -82,25 +82,28 @@ func sidebar(c *ui.Context, s *AppState) {
 }
 
 // sidebarSwitch is the Thumbnails/Outline choice as two equal-width
-// segments. ui.Segmented sizes its segments to their labels, so it is
-// rebuilt here from buttons that each Grow(1) inside a shared track —
-// same look (surface, border, radius, active tint), but splitting the
-// panel width evenly between the two.
+// segments. ui.Segmented sizes its segments to their labels (a growing gap
+// trails the last one), so it is rebuilt here from two buttons that each
+// Grow(1) inside a shared track — same look (surface, border, radius,
+// active tint), but splitting the panel width evenly between the two.
+// The buttons MUST be built inside track.Children: constructors nest into
+// their parent only inside that callback, otherwise they land in the
+// enclosing column (stacking one per row).
 func sidebarSwitch(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	track := ui.Row(c).AlignItems(ui.Stretch).Gap(th.Space(0.5)).
 		Padding(th.Space(0.5)).Radius(th.Radius).Background(th.Surface).
 		Border(1, th.Border).FillWidth()
 	track.Label("Sidebar panel")
-	labels := [...]string{"Thumbnails", "Outline"}
-	for i, label := range labels {
-		i, label := i, label
-		seg := ui.Button(c, label).Grow(1)
-		if int(s.SidebarTab) == i {
-			seg.Background(th.Accent.Alpha(0.15)).TextColor(th.Accent)
+	track.Children(func() {
+		for i, label := range [...]string{"Thumbnails", "Outline"} {
+			seg := ui.Button(c, label).Grow(1)
+			if int(s.SidebarTab) == i {
+				seg.Background(th.Accent.Alpha(0.15)).TextColor(th.Accent)
+			}
+			seg.OnClick(func() { s.SetSidebarTab(SidebarTab(i)) })
 		}
-		seg.OnClick(func() { s.SetSidebarTab(SidebarTab(i)) })
-	}
+	})
 }
 
 // ---- Thumbnails ---------------------------------------------------------
