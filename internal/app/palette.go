@@ -67,10 +67,10 @@ func palettePanel(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyHome, func() { palSel = 0; palSkipHeader(+1) })
 	c.OnShortcut(0, ui.KeyEnd, func() { palSel = len(palItems) - 1; palSkipHeader(-1) })
 
-	// Column has a fixed height so the results list has a bounded box to
-	// virtualize and scroll in — with only MaxHeight the column clamps
-	// after measuring the content and the list never scrolls.
-	ui.Column(c).Width(640).Height(420).Gap(t.Space(2)).Children(func() {
+	// The results list carries a FIXED HEIGHT on the list element itself —
+	// a scrollable ui.List scrolls only when the element is sized directly
+	// (mygo gallery example), not when it Fills/Grows inside a sized parent.
+	ui.Column(c).Width(640).Gap(t.Space(2)).Children(func() {
 		c.Key("palette-query")
 		in := ui.TextInput(c, &palQuery).
 			Placeholder("Search commands, pages, outline, recent documents…").AutoFocus()
@@ -90,10 +90,9 @@ func palettePanel(c *ui.Context, s *AppState) {
 		if palSel >= 0 {
 			palList.ScrollIntoView(palSel)
 		}
-		// Fill, like the sidebar's thumbnail list: the list must fill the
-		// bounded column to virtualize and scroll; Grow(1) left it sizing
-		// to its content.
-		ui.List(c, &palList, len(palItems), func(i int) { palRow(c, s, t, i) }).Fill()
+		// Fixed height + full width: the height bounds the virtualized
+		// scrolling; FillWidth takes the column's remaining width.
+		ui.List(c, &palList, len(palItems), func(i int) { palRow(c, s, t, i) }).Height(372).FillWidth()
 	})
 }
 

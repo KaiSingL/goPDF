@@ -100,9 +100,6 @@ func toolbar(c *ui.Context, s *AppState) {
 			if m.Item("Rotate Clockwise").Chosen() {
 				t.RotateBy()
 			}
-			if m.Item("Toggle Sidebar").Chosen() {
-				s.ToggleSidebar()
-			}
 			m.Separator()
 			if m.Item("Command Palette…").Chosen() {
 				s.ShowPalette = true

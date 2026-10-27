@@ -36,7 +36,7 @@ var window *mygo.Window
 // on the dark theme, so it gets more opacity there.
 func accentTint(th *ui.Theme) ui.Color {
 	if th.Dark {
-		return th.Accent.Alpha(0.30)
+		return th.Accent.Alpha(0.45)
 	}
 	return th.Accent.Alpha(0.15)
 }
@@ -44,7 +44,7 @@ func accentTint(th *ui.Theme) ui.Color {
 // accentTintSoft is the subtler variant (outline's current-section row).
 func accentTintSoft(th *ui.Theme) ui.Color {
 	if th.Dark {
-		return th.Accent.Alpha(0.22)
+		return th.Accent.Alpha(0.32)
 	}
 	return th.Accent.Alpha(0.10)
 }
