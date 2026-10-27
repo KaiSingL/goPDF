@@ -155,13 +155,16 @@ func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
 		row.Border(2, th.Accent).Radius(th.Space(1))
 	}
 	row.Children(func() {
-		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).Background(th.Surface)
+		// The page surface always carries a border: the thumbnail itself is
+		// white, and without a border it merges with the light-mode panel
+		// background (the placeholder-only border was the bug).
+		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).
+			Background(th.Surface).Border(1, th.Border)
 		if img != nil {
 			surface.Children(func() {
-				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h)
+				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h).
+					Fit(ui.FillBox).Radius(th.Space(0.5))
 			})
-		} else {
-			surface.Border(1, th.Border)
 		}
 		num := ui.Textf(c, "%d", p+1).FontSize(11)
 		if p != t.CurPage {
