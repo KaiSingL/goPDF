@@ -25,10 +25,29 @@ package app
 
 import (
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 )
 
 // window is the main window, set by main.go (D) immediately after creation.
 var window *mygo.Window
+
+// accentTint is the background of active chrome surfaces (active tab, the
+// active Thumbnails/Outline segment): the same alpha all but disappears
+// on the dark theme, so it gets more opacity there.
+func accentTint(th *ui.Theme) ui.Color {
+	if th.Dark {
+		return th.Accent.Alpha(0.30)
+	}
+	return th.Accent.Alpha(0.15)
+}
+
+// accentTintSoft is the subtler variant (outline's current-section row).
+func accentTintSoft(th *ui.Theme) ui.Color {
+	if th.Dark {
+		return th.Accent.Alpha(0.22)
+	}
+	return th.Accent.Alpha(0.10)
+}
 
 // SetWindow installs the main window; main.go calls it right after creating
 // the window so background goroutines can hop to the UI thread via update.

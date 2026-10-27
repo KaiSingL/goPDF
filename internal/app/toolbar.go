@@ -48,6 +48,11 @@ func toolbar(c *ui.Context, s *AppState) {
 		pruneByTabID(searchQueries, s)
 	}
 	ui.Toolbar(c, func() {
+		// Leftmost: the sidebar toggle, icon-only (spec §4 update).
+		panel := ui.Button(c, "").Label("Toggle sidebar").Tooltip("Toggle sidebar")
+		panel.Children(func() { ui.Icon(c, chromeIcons.panel).FontSize(16) })
+		panel.OnClick(func() { s.ToggleSidebar() })
+
 		back := ui.Button(c, "").Label("Back").Tooltip("Go back").
 			Disabled(len(t.History) == 0)
 		back.Children(func() { ui.Icon(c, chromeIcons.back).FontSize(16) })

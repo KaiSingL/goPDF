@@ -23,7 +23,7 @@ import "github.com/egoist/mygo/ui"
 // draw with currentColor, so ui.Icon tints them from the ancestor text
 // color and they follow the theme.
 var chromeIcons = struct {
-	close, plus, back, forward, reload, search, share, comment, more, moon, sun *ui.SVG
+	close, plus, back, forward, reload, search, share, comment, more, moon, sun, panel *ui.SVG
 }{
 	close:   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`)),
 	plus:    ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>`)),
@@ -36,6 +36,7 @@ var chromeIcons = struct {
 	more:    ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>`)),
 	moon:    ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>`)),
 	sun:     ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>`)),
+	panel:   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>`)),
 }
 
 // tabBarHeight and tabHeight size the strip (spec §4: browser-style).
@@ -82,7 +83,7 @@ func tabButton(c *ui.Context, s *AppState, t *Tab) {
 	case active:
 		// The active tab is an accent-tinted surface (matching the
 		// Thumbnails/Outline switch), not a top accent bar.
-		b.Background(th.Accent.Alpha(0.15))
+		b.Background(accentTint(th))
 	case b.Hovered():
 		b.Background(th.SurfaceHover)
 	}

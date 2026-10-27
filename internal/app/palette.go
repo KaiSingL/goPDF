@@ -90,7 +90,10 @@ func palettePanel(c *ui.Context, s *AppState) {
 		if palSel >= 0 {
 			palList.ScrollIntoView(palSel)
 		}
-		ui.List(c, &palList, len(palItems), func(i int) { palRow(c, s, t, i) }).Grow(1)
+		// Fill, like the sidebar's thumbnail list: the list must fill the
+		// bounded column to virtualize and scroll; Grow(1) left it sizing
+		// to its content.
+		ui.List(c, &palList, len(palItems), func(i int) { palRow(c, s, t, i) }).Fill()
 	})
 }
 
@@ -103,7 +106,7 @@ func palRow(c *ui.Context, s *AppState, t *ui.Theme, i int) {
 			TextColor(t.TextMuted).FontSize(t.FontSize * 0.8).Bold()
 		return
 	}
-	row := ui.Row(c).Fill().Padding(t.Space(1), t.Space(1.5)).Radius(t.Radius).Gap(t.Space(2))
+	row := ui.Row(c).Fill().Padding(t.Space(2), t.Space(2)).Radius(t.Radius).Gap(t.Space(2))
 	if i == palSel {
 		row.Background(t.SurfaceHover)
 	}

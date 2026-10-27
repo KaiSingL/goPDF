@@ -21,9 +21,10 @@ func (s *AppState) View(c *ui.Context) {
 		ui.Divider(c) // ─ under the toolbar
 
 		// Content: sidebar (C) beside the page area (B), which fills the
-		// rest. No document open → no sidebar (nothing to thumb or outline).
+		// rest. No document open — no tabs or a launcher tab — means no
+		// sidebar: nothing to thumb or outline (matches the initial page).
 		ui.Row(c).Fill().Grow(1).Children(func() {
-			if s.ShowSidebar && s.Active() != nil {
+			if s.ShowSidebar && s.Active() != nil && !s.Active().IsEmpty() {
 				sidebar(c, s) // C: thumbnails / outline, SidebarWidth wide
 				ui.Divider(c) // │ between sidebar and pages
 			}

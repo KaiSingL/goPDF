@@ -248,17 +248,98 @@ func viewerEmpty(c *ui.Context, s *AppState, t *Tab) {
 		openDropped(s, fs)
 	}
 	e.Children(func() {
-		switch {
-		case t == nil || t.IsEmpty():
+		if t == nil || t.IsEmpty() { // launcher: drop hint + recents
 			ui.Text(c, "Drop a PDF anywhere").FontSize(24).Bold()
 			ui.Text(c, "or open one from the toolbar").TextColor(th.TextMuted)
 			if ui.PrimaryButton(c, "Open PDF…").Clicked() {
 				openFilePicker()
 			}
-		default:
-			ui.Text(c, "This document has no pages.").TextColor(th.TextMuted)
+			if len(s.Recents) > 0 {
+				ui.Text(c, "Recent documents").TextColor(th.TextMuted).FontSize(12)
+				ui.Row(c).Gap(th.Space(3)).Children(func() {
+					for _, p := range s.Recents[:min(len(s.Recents), 8)] {
+						recentCard(c, th, p)
+					}
+				})
+			}
+			return
 		}
+		ui.Text(c, "This document has no pages.").TextColor(th.TextMuted)
 	})
+}
+
+// recentCard is one recent-document card: the first page's thumbnail over
+// the file name; clicking opens it.
+func recentCard(c *ui.Context, th *ui.Theme, path string) {
+	card := ui.ButtonBase(c.Key("recent:" + path)).
+		Width(112).Gap(th.Space(1)).AlignItems(ui.Center).
+		Radius(th.Space(1)).Cursor(ui.CursorPointer).Label("Open " + filepath.Base(path))
+	if card.Hovered() {
+		card.Background(th.SurfaceHover)
+	}
+	card.Children(func() {
+		surface := ui.Box(c).Size(104, 136).Radius(th.Space(0.5)).
+			Background(th.Surface).Border(1, th.Border).Padding(1)
+		if bm := recentThumbFor(path); bm != nil {
+			surface.Children(func() {
+				ui.Image(c, bm).Size(102, 134).Fit(ui.FillBox).Radius(th.Space(0.5))
+			})
+		}
+		ui.Text(c, filepath.Base(path)).SingleLine().Ellipsis("…").
+			MaxWidth(104).FontSize(11).TextColor(th.TextMuted)
+	})
+	card.OnClick(func() { OpenPath(path) })
+}
+
+// recentThumbFor returns the cached first-page thumbnail of a recent
+// document, kicking an on-demand render through a transient pdf.Doc the
+// first time it is asked for. Nothing here touches AppState; the callback
+// stores goroutine-safe bits only.
+var (
+	recentMu       sync.Mutex
+	recentThumbs   = map[string]*ui.Bitmap{} // path → thumb; nil entry = tried and failed
+	recentInflight = map[string]bool{}
+)
+
+func recentThumbFor(path string) *ui.Bitmap {
+	recentMu.Lock()
+	bm, done := recentThumbs[path]
+	busy := recentInflight[path]
+	recentMu.Unlock()
+	if done || busy {
+		return bm
+	}
+	recentMu.Lock()
+	recentInflight[path] = true
+	recentMu.Unlock()
+	go func() {
+		doc, err := pdf.Open(path)
+		if err != nil {
+			recentMu.Lock()
+			recentThumbs[path] = nil
+			delete(recentInflight, path)
+			recentMu.Unlock()
+			return
+		}
+		doc.RenderAsync(pdf.RenderReq{Page: 0, DPI: pdf.ThumbDPI, Kind: pdf.KindThumb},
+			func(img *image.RGBA, err error) {
+				var out *ui.Bitmap
+				if err == nil && img != nil {
+					out = ui.NewBitmap(img)
+				}
+				recentMu.Lock()
+				recentThumbs[path] = out
+				delete(recentInflight, path)
+				recentMu.Unlock()
+				if window != nil {
+					window.Invalidate()
+				}
+				// Close off the worker itself: Close waits for the worker
+				// to drain, which cannot happen from inside a task.
+				go doc.Close()
+			})
+	}()
+	return nil
 }
 
 // openDropped opens the first dropped PDF in a new tab. Launcher tabs are

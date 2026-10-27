@@ -100,7 +100,7 @@ func sidebarSwitch(c *ui.Context, s *AppState) {
 		for i, label := range [...]string{"Thumbnails", "Outline"} {
 			seg := ui.Button(c, label).Grow(1)
 			if int(s.SidebarTab) == i {
-				seg.Background(th.Accent.Alpha(0.15)).TextColor(th.Accent)
+				seg.Background(accentTint(th)).TextColor(th.Accent)
 			}
 			seg.OnClick(func() { s.SetSidebarTab(SidebarTab(i)) })
 		}
@@ -156,14 +156,14 @@ func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
 		row.Border(2, th.Accent).Radius(th.Space(1))
 	}
 	row.Children(func() {
-		// The page surface always carries a border: the thumbnail itself is
-		// white, and without a border it merges with the light-mode panel
-		// background (the placeholder-only border was the bug).
+		// The page surface always carries a border, and the image sits one
+		// pixel inside it (Padding(1)): a child filling the surface painted
+		// over the right and bottom border edges.
 		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).
-			Background(th.Surface).Border(1, th.Border)
+			Background(th.Surface).Border(1, th.Border).Padding(1)
 		if img != nil {
 			surface.Children(func() {
-				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h).
+				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w-2, h-2).
 					Fit(ui.FillBox).Radius(th.Space(0.5))
 			})
 		}
@@ -330,7 +330,7 @@ func walkOutline(c *ui.Context, t *Tab, nodes []pdf.OutlineNode, path, current s
 		})
 		switch {
 		case p == current: // where the reader is: accent, tinted row
-			it.TextColor(th.Accent).Background(th.Accent.Alpha(0.10))
+			it.TextColor(th.Accent).Background(accentTintSoft(th))
 		case n.Page < 0: // no target: grayed, not navigable
 			it.TextColor(th.TextMuted)
 			continue
