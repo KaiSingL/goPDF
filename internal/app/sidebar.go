@@ -156,14 +156,19 @@ func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
 		row.Border(2, th.Accent).Radius(th.Space(1))
 	}
 	row.Children(func() {
-		// The page surface always carries a border, and the image sits one
-		// pixel inside it (Padding(1)): a child filling the surface painted
-		// over the right and bottom border edges.
+		// The frame is a DrawOver stroke on the surface: DrawOver paints
+		// after children, so nothing the surface holds can cover it (a
+		// CSS-style Border+Padding inset was overpainted on the right and
+		// bottom edges by the filling image). The stroke also frames the
+		// empty placeholder while no render has arrived.
 		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).
-			Background(th.Surface).Border(1, th.Border).Padding(1)
+			Background(th.Surface)
+		surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
+		})
 		if img != nil {
 			surface.Children(func() {
-				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w-2, h-2).
+				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h).
 					Fit(ui.FillBox).Radius(th.Space(0.5))
 			})
 		}

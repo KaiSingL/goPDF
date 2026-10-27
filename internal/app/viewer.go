@@ -278,11 +278,17 @@ func recentCard(c *ui.Context, th *ui.Theme, path string) {
 		card.Background(th.SurfaceHover)
 	}
 	card.Children(func() {
+		// Same frame treatment as the sidebar thumbnails: a DrawOver
+		// stroke paints after children, so the image can never cover the
+		// frame's right/bottom edges.
 		surface := ui.Box(c).Size(104, 136).Radius(th.Space(0.5)).
-			Background(th.Surface).Border(1, th.Border).Padding(1)
+			Background(th.Surface)
+		surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
+			p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
+		})
 		if bm := recentThumbFor(path); bm != nil {
 			surface.Children(func() {
-				ui.Image(c, bm).Size(102, 134).Fit(ui.FillBox).Radius(th.Space(0.5))
+				ui.Image(c, bm).Size(104, 136).Fit(ui.FillBox).Radius(th.Space(0.5))
 			})
 		}
 		ui.Text(c, filepath.Base(path)).SingleLine().Ellipsis("…").
