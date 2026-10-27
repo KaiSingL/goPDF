@@ -14,6 +14,7 @@ package app
 import (
 	"fmt"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync/atomic"
 
@@ -253,6 +254,11 @@ func (s *AppState) CloseTab(id string) {
 	if t.Doc != nil { // Doc-less tabs (failed open, tests) close without a panic
 		t.Doc.Close()
 	}
+	// Drop the tab's per-tab UI caches now (viewer bitmaps, sidebar
+	// thumbnails, outline state) — releasing the doc alone leaves those
+	// pixel buffers reachable. Lives in components.go so this file stays
+	// mygo-free.
+	teardownTabState(t.ID)
 	s.ClosedPaths = append([]string{t.Path}, s.ClosedPaths...)
 	if len(s.ClosedPaths) > 16 {
 		s.ClosedPaths = s.ClosedPaths[:16]
@@ -260,6 +266,10 @@ func (s *AppState) CloseTab(id string) {
 	switch {
 	case len(s.Tabs) == 0:
 		s.ActiveTab = -1
+		// Last tab closed: the caches above (and the doc's renders) freed
+		// a lot at once. Nudge the runtime to hand it to the OS in the
+		// background instead of sitting on it (stdlib only).
+		go debug.FreeOSMemory()
 	case idx < s.ActiveTab:
 		s.ActiveTab--
 	case idx == s.ActiveTab:

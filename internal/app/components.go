@@ -24,6 +24,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
@@ -71,6 +73,57 @@ func update(fn func()) {
 
 // Update is the exported variant of update for package main.
 func Update(fn func()) { update(fn) }
+
+// teardownTabState releases every per-tab UI cache of a closed tab:
+//
+//   - viewer.go: bmpCache (page bitmaps, up to bitmapCap = 48 entries —
+//     each pins a full page render's pixels, because ui.Bitmap zero-copies
+//     the RGBA), inflight, viewerStates and viewerGen (all viewerMu-guarded;
+//     bmpClearTab and inflightClearTab expect the caller to hold it).
+//   - sidebar.go: thumbBitmaps/thumbOrder (thumbnail bitmaps, up to the
+//     200-entry cap; UI-thread-only), thumbLists and thumbLastPage
+//     (UI-thread-only), thumbsRequested and thumbGens (thumbMu-guarded,
+//     shared with the doc workers) and outlineOpen ("tabID|path" keys).
+//
+// Without this, closing a tab releases the fitz doc but the bitmaps stay
+// reachable and RAM plateaus at the sum of the caches. Call from the UI
+// thread (AppState.CloseTab is one).
+func teardownTabState(tabID string) {
+	viewerMu.Lock()
+	if st := viewerStates[tabID]; st != nil && st.timer != nil {
+		st.timer.Stop() // don't leave a zoom debounce firing for a dead tab
+	}
+	delete(viewerStates, tabID)
+	delete(viewerGen, tabID)
+	bmpClearTab(tabID)
+	inflightClearTab(tabID)
+	viewerMu.Unlock()
+
+	delete(thumbLists, tabID)
+	delete(thumbLastPage, tabID)
+	thumbMu.Lock()
+	delete(thumbsRequested, tabID)
+	delete(thumbGens, tabID)
+	thumbMu.Unlock()
+	for k := range thumbBitmaps {
+		if k.tabID == tabID {
+			delete(thumbBitmaps, k)
+		}
+	}
+	for i := 0; i < len(thumbOrder); { // compact the cap order too
+		if thumbOrder[i].tabID == tabID {
+			thumbOrder = append(thumbOrder[:i], thumbOrder[i+1:]...)
+			continue
+		}
+		i++
+	}
+	prefix := tabID + "|"
+	for k := range outlineOpen {
+		if strings.HasPrefix(k, prefix) {
+			delete(outlineOpen, k)
+		}
+	}
+}
 
 // ---- C, tabs.go / toolbar.go / sidebar.go / statusbar.go ---------------
 // Implemented in tabs.go (tab strip), toolbar.go (nav / search / zoom

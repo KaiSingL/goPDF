@@ -272,27 +272,35 @@ func viewerEmpty(c *ui.Context, s *AppState, t *Tab) {
 // the file name; clicking opens it.
 func recentCard(c *ui.Context, th *ui.Theme, path string) {
 	card := ui.ButtonBase(c.Key("recent:" + path)).
-		Width(112).Gap(th.Space(1)).AlignItems(ui.Center).
+		Width(112).AlignItems(ui.Center).
 		Radius(th.Space(1)).Cursor(ui.CursorPointer).Label("Open " + filepath.Base(path))
 	if card.Hovered() {
 		card.Background(th.SurfaceHover)
 	}
+	// ButtonBase is a ROW (it is the tab strip's row base): its direct
+	// children would sit side by side and the name would be clipped away
+	// by Width(112). One Column child stacks the surface and the name
+	// vertically instead; FillWidth lets the column center its children
+	// across the card's full 112 DIPs.
 	card.Children(func() {
-		// Same frame treatment as the sidebar thumbnails: a DrawOver
-		// stroke paints after children, so the image can never cover the
-		// frame's right/bottom edges.
-		surface := ui.Box(c).Size(104, 136).Radius(th.Space(0.5)).
-			Background(th.Surface)
-		surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
-			p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
-		})
-		if bm := recentThumbFor(path); bm != nil {
-			surface.Children(func() {
-				ui.Image(c, bm).Size(104, 136).Fit(ui.FillBox).Radius(th.Space(0.5))
+		ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(th.Space(1)).
+			Children(func() {
+				// Same frame treatment as the sidebar thumbnails: a
+				// DrawOver stroke paints after children, so the image can
+				// never cover the frame's right/bottom edges.
+				surface := ui.Box(c).Size(104, 136).Radius(th.Space(0.5)).
+					Background(th.Surface)
+				surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
+					p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
+				})
+				if bm := recentThumbFor(path); bm != nil {
+					surface.Children(func() {
+						ui.Image(c, bm).Size(104, 136).Fit(ui.FillBox).Radius(th.Space(0.5))
+					})
+				}
+				ui.Text(c, filepath.Base(path)).SingleLine().Ellipsis("…").
+					MaxWidth(104).FontSize(11).TextColor(th.TextMuted)
 			})
-		}
-		ui.Text(c, filepath.Base(path)).SingleLine().Ellipsis("…").
-			MaxWidth(104).FontSize(11).TextColor(th.TextMuted)
 	})
 	card.OnClick(func() { OpenPath(path) })
 }
@@ -304,8 +312,29 @@ func recentCard(c *ui.Context, th *ui.Theme, path string) {
 var (
 	recentMu       sync.Mutex
 	recentThumbs   = map[string]*ui.Bitmap{} // path → thumb; nil entry = tried and failed
+	recentOrder    []string                  // insertion order, for the recentThumbCap
 	recentInflight = map[string]bool{}
 )
+
+// recentThumbCap bounds the thumbnail cache so a long session browsing
+// many recents cannot grow it without end (24 thumbnails at ThumbDPI are
+// a few MB at most).
+const recentThumbCap = 24
+
+// recentThumbPut stores the thumbnail under path, evicting the oldest
+// entries past recentThumbCap in FIFO order (like thumbOrder). The caller
+// holds recentMu. Failures are cached as nil, exactly like successes, so
+// a broken PDF is not retried every build.
+func recentThumbPut(path string, bm *ui.Bitmap) {
+	if _, ok := recentThumbs[path]; !ok {
+		recentOrder = append(recentOrder, path)
+	}
+	recentThumbs[path] = bm
+	for len(recentOrder) > recentThumbCap {
+		delete(recentThumbs, recentOrder[0])
+		recentOrder = recentOrder[1:]
+	}
+}
 
 func recentThumbFor(path string) *ui.Bitmap {
 	recentMu.Lock()
@@ -322,7 +351,7 @@ func recentThumbFor(path string) *ui.Bitmap {
 		doc, err := pdf.Open(path)
 		if err != nil {
 			recentMu.Lock()
-			recentThumbs[path] = nil
+			recentThumbPut(path, nil)
 			delete(recentInflight, path)
 			recentMu.Unlock()
 			return
@@ -334,7 +363,7 @@ func recentThumbFor(path string) *ui.Bitmap {
 					out = ui.NewBitmap(img)
 				}
 				recentMu.Lock()
-				recentThumbs[path] = out
+				recentThumbPut(path, out)
 				delete(recentInflight, path)
 				recentMu.Unlock()
 				if window != nil {

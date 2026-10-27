@@ -37,6 +37,10 @@ var (
 	palSel      int
 	palItems    []paletteItem
 	palList     ui.ListState
+	// palScrolledSel is the selection already scrolled into view: the
+	// list only scrolls for a CHANGED selection, so a wheel notch or a
+	// scrollbar drag survives until the selection moves again.
+	palScrolledSel = -1
 )
 
 // paletteOverlay renders the palette over the UI while s.ShowPalette.
@@ -49,6 +53,7 @@ func paletteOverlay(c *ui.Context, s *AppState) {
 	if !palOpenSeen { // opened since the last build: start fresh
 		palOpenSeen = true
 		palQuery, palSel = "", 0
+		palScrolledSel = -1      // a fresh open scrolls to the selection once
 		palList = ui.ListState{} // drop the scroll of the previous open
 		rebuildPalette(s)
 	}
@@ -86,8 +91,11 @@ func palettePanel(c *ui.Context, s *AppState) {
 			return
 		}
 		// The virtualized list only builds visible rows: keep the selected
-		// row among them as Up/Down and Home/End move it.
-		if palSel >= 0 {
+		// row among them as Up/Down and Home/End move it — but only when
+		// the selection CHANGED, so user scrolling (wheel, scrollbar)
+		// isn't snapped back to the selection every frame.
+		if palSel >= 0 && palSel != palScrolledSel {
+			palScrolledSel = palSel
 			palList.ScrollIntoView(palSel)
 		}
 		// Fixed height + full width: the height bounds the virtualized

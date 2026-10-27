@@ -42,7 +42,13 @@ func statusBar(c *ui.Context, s *AppState) {
 		pruneByTabID(pageEdits, s)
 	}
 	t := s.Active()
-	ui.Row(c).Height(28).PaddingX(th.Space(2)).Gap(th.Space(2)).AlignItems(ui.Center).Children(func() {
+	// One compact line: a fixed height with symmetric vertical padding
+	// (PaddingY is included in Height, border-box style) so the controls
+	// center with visible space above and below. The page input and the
+	// theme button are slimmed in kind below: mygo pads both by default to
+	// ~28+ DIPs tall, which would fill this bar edge to edge.
+	ui.Row(c).Height(36).PaddingY(th.Space(1)).
+		PaddingX(th.Space(2)).Gap(th.Space(2)).AlignItems(ui.Center).Children(func() {
 		if t == nil {
 			ui.Text(c, "GoPDF").TextColor(th.TextMuted).FontSize(12)
 			return
@@ -56,7 +62,11 @@ func statusBar(c *ui.Context, s *AppState) {
 			FontSize(12).TextColor(th.TextMuted)
 
 		ui.Spacer(c)
-		theme := ui.Button(c, "").Label("Toggle dark mode").Tooltip("Toggle dark mode")
+		// Slim vertical padding: the button's default (Space(1.5)) plus its
+		// border is taller than the bar's content box, which would sit it
+		// flush against the bar's edges.
+		theme := ui.Button(c, "").Label("Toggle dark mode").Tooltip("Toggle dark mode").
+			PaddingY(th.Space(0.5))
 		theme.Children(func() {
 			icon := chromeIcons.moon
 			if th.Dark {
@@ -72,10 +82,14 @@ func statusBar(c *ui.Context, s *AppState) {
 // pageInput is the inline page-number field: submit navigates to n-1
 // (Navigate clamps); invalid input just resets the display.
 func pageInput(c *ui.Context, t *Tab) {
+	th := c.Theme()
 	edit := pageEditFor(t)
+	// Slim vertical padding so the input (mygo's default is Space(1.5),
+	// ~28 DIPs tall with the border) centers in the bar with room above
+	// and below instead of filling it edge to edge.
 	in := ui.TextInput(c, edit).
 		Label("Go to page").Tooltip("Go to page").
-		Width(56).Placeholder(fmt.Sprintf("%d", t.CurPage+1)).
+		Width(56).PaddingY(th.Space(0.5)).Placeholder(fmt.Sprintf("%d", t.CurPage+1)).
 		FontSize(12)
 	if in.Submitted() {
 		n, err := strconv.Atoi(strings.TrimSpace(*edit))
