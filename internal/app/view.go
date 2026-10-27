@@ -12,20 +12,25 @@ func (s *AppState) View(c *ui.Context) {
 	shortcuts(c, s) // D: app-wide keyboard bindings, window scope (first)
 
 	// Fill the window: the chrome bars take their natural height and the
-	// content row grows into the rest.
+	// content row grows into the rest. Dividers separate the bands and the
+	// sidebar from the viewer so the chrome doesn't read as one surface.
 	ui.Column(c).Fill().Children(func() {
 		tabBar(c, s)  // C: browser-style tab strip
+		ui.Divider(c) // ─ under the tab strip
 		toolbar(c, s) // C: back/forward, reload, search, zoom
+		ui.Divider(c) // ─ under the toolbar
 
 		// Content: sidebar (C) beside the page area (B), which fills the
-		// rest.
+		// rest. No document open → no sidebar (nothing to thumb or outline).
 		ui.Row(c).Fill().Grow(1).Children(func() {
-			if s.ShowSidebar {
+			if s.ShowSidebar && s.Active() != nil {
 				sidebar(c, s) // C: thumbnails / outline, SidebarWidth wide
+				ui.Divider(c) // │ between sidebar and pages
 			}
 			viewer(c, s) // B: the scrollable page area
 		})
 
+		ui.Divider(c)        // ─ over the status bar
 		statusBar(c, s)      // C: page X/Y, fit mode, zoom, theme toggle
 		paletteOverlay(c, s) // D: Ctrl+K palette, drawn above everything
 	})

@@ -66,11 +66,8 @@ type thumbBitmap struct {
 func sidebar(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	pruneChromeState(s)
-	ui.Column(c).Width(SidebarWidth).FillHeight().Children(func() {
-		// The bound *int writes s.SidebarTab directly; the segmented shows
-		// only while the sidebar is visible, so SetSidebarTab's
-		// ShowSidebar=true has no extra effect here.
-		ui.Segmented(c, (*int)(&s.SidebarTab), "Thumbnails", "Outline")
+	ui.Column(c).Width(SidebarWidth).FillHeight().Gap(th.Space(1)).Padding(th.Space(1), 0, 0, 0).Children(func() {
+		sidebarSwitch(c, s)
 		t := s.Active()
 		if t == nil {
 			ui.Text(c, "No document open").TextColor(th.TextMuted).FontSize(13)
@@ -82,6 +79,28 @@ func sidebar(c *ui.Context, s *AppState) {
 		}
 		thumbsPanel(c, s, t)
 	})
+}
+
+// sidebarSwitch is the Thumbnails/Outline choice as two equal-width
+// segments. ui.Segmented sizes its segments to their labels, so it is
+// rebuilt here from buttons that each Grow(1) inside a shared track —
+// same look (surface, border, radius, active tint), but splitting the
+// panel width evenly between the two.
+func sidebarSwitch(c *ui.Context, s *AppState) {
+	th := c.Theme()
+	track := ui.Row(c).AlignItems(ui.Stretch).Gap(th.Space(0.5)).
+		Padding(th.Space(0.5)).Radius(th.Radius).Background(th.Surface).
+		Border(1, th.Border).FillWidth()
+	track.Label("Sidebar panel")
+	labels := [...]string{"Thumbnails", "Outline"}
+	for i, label := range labels {
+		i, label := i, label
+		seg := ui.Button(c, label).Grow(1)
+		if int(s.SidebarTab) == i {
+			seg.Background(th.Accent.Alpha(0.15)).TextColor(th.Accent)
+		}
+		seg.OnClick(func() { s.SetSidebarTab(SidebarTab(i)) })
+	}
 }
 
 // ---- Thumbnails ---------------------------------------------------------
@@ -193,21 +212,22 @@ func requestThumb(s *AppState, t *Tab, p int, key pdf.CacheKey) {
 	}
 	req[p] = true
 
-	id := t.ID
 	doc, cache := t.Doc, t.Cache
 	doc.RenderAsync(pdf.RenderReq{Page: p, DPI: pdf.ThumbDPI, Rotate: 0, Kind: pdf.KindThumb},
 		func(img *image.RGBA, err error) {
 			if err != nil || img == nil {
 				return
 			}
-			cache.Put(key, img) // worker goroutine; PageCache is thread-safe
-			update(func() {     // UI thread: refresh while the tab is still open
-				for _, cur := range s.Tabs {
-					if cur.ID == id {
-						return // found: Window.Update has already asked a frame
-					}
-				}
-			})
+			// Worker goroutine: touch only thread-safe things. The cache
+			// store plus a redraw request is the whole job — no AppState
+			// reads here (update() runs inline in tests, which would race
+			// the UI thread; the next build finds the cached image, and in
+			// production Invalidate is the documented goroutine-safe redraw
+			// ask — the same pattern the viewer's completions use).
+			cache.Put(key, img)
+			if window != nil {
+				window.Invalidate()
+			}
 		})
 }
 
@@ -236,19 +256,41 @@ func thumbBitmapFor(t *Tab, p int, img *image.RGBA) *ui.Bitmap {
 // ---- Outline ------------------------------------------------------------
 
 // outlinePanel renders t.Outline as a tree; -1 pages are muted and dead.
+// The section the reader is currently in is highlighted.
 func outlinePanel(c *ui.Context, t *Tab) {
 	if len(t.Outline) == 0 {
 		ui.Text(c, "No outline").TextColor(c.Theme().TextMuted).FontSize(13)
 		return
 	}
+	current := currentOutlinePath(t)
 	ui.Scroll(c).Fill().Children(func() {
-		ui.Tree(c, func() { walkOutline(c, t, t.Outline, "o") })
+		ui.Tree(c, func() { walkOutline(c, t, t.Outline, "o", current) })
 	})
 }
 
+// currentOutlinePath returns the path of the outline entry the reader is
+// currently in: the last entry in document order whose target page is at or
+// before CurPage. Entries with no page target (-1) never become current.
+func currentOutlinePath(t *Tab) string {
+	current := ""
+	var walk func(nodes []pdf.OutlineNode, path string)
+	walk = func(nodes []pdf.OutlineNode, path string) {
+		for i, n := range nodes {
+			p := fmt.Sprintf("%s/%d", path, i)
+			if n.Page >= 0 && n.Page <= t.CurPage {
+				current = p
+			}
+			walk(n.Children, p)
+		}
+	}
+	walk(t.Outline, "o")
+	return current
+}
+
 // walkOutline builds one level of the tree. path identifies each node
-// stably across builds for its open/closed state.
-func walkOutline(c *ui.Context, t *Tab, nodes []pdf.OutlineNode, path string) {
+// stably across builds for its open/closed state; the node matching
+// current (the reader's section) is highlighted in the accent color.
+func walkOutline(c *ui.Context, t *Tab, nodes []pdf.OutlineNode, path, current string) {
 	th := c.Theme()
 	for i, n := range nodes {
 		p := fmt.Sprintf("%s/%d", path, i)
@@ -266,10 +308,13 @@ func walkOutline(c *ui.Context, t *Tab, nodes []pdf.OutlineNode, path string) {
 			}
 		}
 		it := ui.TreeItem(c.Key(p), label, open, func() {
-			walkOutline(c, t, n.Children, p)
+			walkOutline(c, t, n.Children, p, current)
 		})
-		if n.Page < 0 {
-			it.TextColor(th.TextMuted) // no target: grayed, not navigable
+		switch {
+		case p == current: // where the reader is: accent, tinted row
+			it.TextColor(th.Accent).Background(th.Accent.Alpha(0.10))
+		case n.Page < 0: // no target: grayed, not navigable
+			it.TextColor(th.TextMuted)
 			continue
 		}
 		page := n.Page

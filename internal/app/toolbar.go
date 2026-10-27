@@ -64,6 +64,11 @@ func toolbar(c *ui.Context, s *AppState) {
 
 		searchBar(c, s, t)
 
+		// The spacer absorbs the leftover width, keeping the zoom, fit and
+		// overflow controls flush right instead of everything piling onto
+		// the left (ui.Spacer is ui.Toolbar's own mechanism for this).
+		ui.Spacer(c)
+
 		// Zoom controls (spec §5: 25%–400%, stepping by ZoomStep). The
 		// percent button resets to 100% (t.SetZoom(1)).
 		zout := ui.Button(c, "−").Label("Zoom out").Tooltip("Zoom out")
