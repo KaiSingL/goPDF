@@ -21,14 +21,20 @@ func (s *AppState) View(c *ui.Context) {
 		ui.Divider(c) // ─ under the toolbar
 
 		// Content: sidebar (C) beside the page area (B), which fills the
-		// rest. No document open — no tabs or a launcher tab — means no
-		// sidebar: nothing to thumb or outline (matches the initial page).
+		// rest, and — when toggled — the search results panel (D) on the
+		// right. No document open — no tabs or a launcher tab — means no
+		// sidebar or search panel: nothing to thumb, outline or search
+		// (matches the initial page).
 		ui.Row(c).Fill().Grow(1).Children(func() {
 			if s.ShowSidebar && s.Active() != nil && !s.Active().IsEmpty() {
 				sidebar(c, s) // C: thumbnails / outline, SidebarWidth wide
 				ui.Divider(c) // │ between sidebar and pages
 			}
 			viewer(c, s) // B: the scrollable page area
+			if s.ShowSearchPanel && s.Active() != nil {
+				ui.Divider(c)     // │ between pages and the search panel
+				searchPanel(c, s) // D: right-side search results
+			}
 		})
 
 		ui.Divider(c)        // ─ over the status bar

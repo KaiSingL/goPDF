@@ -55,10 +55,10 @@ func accentTintSoft(th *ui.Theme) ui.Color {
 // the window so background goroutines can hop to the UI thread via update.
 func SetWindow(w *mygo.Window) { window = w }
 
-// SearchFocus is the focus request channel for the toolbar search field:
+// SearchFocus is the focus request channel for the search panel's field:
 // shortcuts set it to a non-empty token (e.g. "search-<n>", unique per
-// request) and the toolbar's search field FocusBinds to it, taking focus on
-// the next build. See the mygo-maintenance skill's FocusBind pattern.
+// request) and the field FocusBinds to it, taking focus on the next
+// build. See the mygo-maintenance skill's FocusBind pattern.
 var SearchFocus string
 
 // update runs fn on the UI thread. Safe from any goroutine. Before the
@@ -84,6 +84,9 @@ func Update(fn func()) { update(fn) }
 //     200-entry cap; UI-thread-only), thumbLists and thumbLastPage
 //     (UI-thread-only), thumbsRequested and thumbGens (thumbMu-guarded,
 //     shared with the doc workers) and outlineOpen ("tabID|path" keys).
+//   - searchpanel.go: searchQueries, searchLists and searchScrolled
+//     (UI-thread-only; small, but dropped here rather than waiting for the
+//     panel's lazy pruning).
 //
 // Without this, closing a tab releases the fitz doc but the bitmaps stay
 // reachable and RAM plateaus at the sum of the caches. Call from the UI
@@ -101,6 +104,9 @@ func teardownTabState(tabID string) {
 
 	delete(thumbLists, tabID)
 	delete(thumbLastPage, tabID)
+	delete(searchQueries, tabID)
+	delete(searchLists, tabID)
+	delete(searchScrolled, tabID)
 	thumbMu.Lock()
 	delete(thumbsRequested, tabID)
 	delete(thumbGens, tabID)

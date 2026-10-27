@@ -142,6 +142,8 @@ func buildMenu(state *app.AppState) *mygo.Menu {
 			// entry opens through OnOpenFile above.
 			{Role: mygo.RoleOpenRecent},
 			mygo.Separator(),
+			{Label: "Print…", Accelerator: "CmdOrCtrl+P",
+				Click: func(*mygo.MenuItem, *mygo.Window) { app.PrintActive() }},
 			{Label: "Reopen Closed Tab", Accelerator: "CmdOrCtrl+Shift+T",
 				Click: run(func() { state.ReopenClosedTab() })},
 			{Label: "Close Tab", Accelerator: "CmdOrCtrl+W",

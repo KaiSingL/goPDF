@@ -112,6 +112,10 @@ type AppState struct {
 	ShowSidebar bool
 	ShowPalette bool // Ctrl+K command palette overlay
 
+	// ShowSearchPanel toggles the right-side in-document search results
+	// panel (Ctrl+F, the toolbar's search icon); searchpanel.go builds it.
+	ShowSearchPanel bool
+
 	ClosedPaths []string // recently closed tab paths, newest first
 	Recents     []string // recent document paths, newest first
 

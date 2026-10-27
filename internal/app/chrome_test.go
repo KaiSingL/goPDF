@@ -1,7 +1,8 @@
 // chrome_test.go drives the four chrome modules (tabs, toolbar, sidebar,
-// status bar) in ui.NewTester without a window. Tabs are built with nil
-// Doc on purpose: every chrome component must be nil-safe. Real-PDF
-// thumbnail rendering needs gen_test.go (Agent B) and is skipped there.
+// status bar) in ui.NewTester without a window, plus the search panel's
+// flow (searchpanel.go: toggle → type → Enter → hits → step → Escape).
+// Tabs are built with nil Doc on purpose: every chrome component must be
+// nil-safe. Real-PDF flows use genTestPDF (gen_test.go).
 package app
 
 import (
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"gopdf/internal/pdf"
@@ -203,19 +205,240 @@ func TestToolbarHistoryAndZoom(t *testing.T) {
 
 func TestToolbarSearchWithoutDoc(t *testing.T) {
 	s := chromeState(1)
-	tab := s.Tabs[0]
 	tt := ui.NewTester(toolbarView(s), 1000, 120)
 
-	// Typing runs (and, with no doc, immediately settles) the search.
+	// The toolbar carries only the search ICON now (the field moved into
+	// the panel): clicking toggles the flag, no field is built here.
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.ShowSearchPanel {
+		t.Fatalf("Search icon did not set ShowSearchPanel")
+	}
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
+	if s.ShowSearchPanel {
+		t.Fatalf("second click did not clear ShowSearchPanel")
+	}
+	tt.Frame() // extra frames while elements come and go
+	tt.Frame()
+	if tt.HasText("Search document") {
+		t.Errorf("toolbar still builds a search field; texts %q", tt.Texts())
+	}
+}
+
+// freshSearchState drops the search panel's per-tab caches for tab: the
+// maps in searchpanel.go live for the whole test binary, and tab IDs from
+// OpenTab (tabSeq) and chromeState (chromeTabSeq) are numbered by
+// different counters, so a recycled "tab-N" must not inherit an earlier
+// test's field text or list scroll.
+func freshSearchState(tab *Tab) {
+	delete(searchQueries, tab.ID)
+	delete(searchLists, tab.ID)
+	delete(searchScrolled, tab.ID)
+}
+
+// panelShell is the search tests' harness view: the shortcuts, the
+// toolbar, and a content row holding the search panel exactly as view.go
+// composes it (divider, then panel) — without the viewer, whose page
+// renders only add worker traffic these assertions don't need.
+func panelShell(s *AppState) func(*ui.Context) {
+	return func(c *ui.Context) {
+		shortcuts(c, s)
+		ui.Column(c).Fill().Children(func() {
+			toolbar(c, s)
+			ui.Row(c).Fill().Grow(1).Children(func() {
+				if s.ShowSearchPanel && s.Active() != nil {
+					ui.Divider(c)
+					searchPanel(c, s)
+				}
+			})
+		})
+	}
+}
+
+// buildIndex waits, synchronized, for the tab's text index: IndexAsync's
+// first callback runs on the doc worker goroutine, but later ones run
+// inline in the caller — so once built, panel searches complete inside
+// the very frame that submits them (deterministic, and race-free under
+// -race: the channel receive orders the worker's writes before the test's
+// reads).
+func buildIndex(t *testing.T, tab *Tab) {
+	t.Helper()
+	done := make(chan struct{})
+	tab.Doc.IndexAsync(func(*pdf.Index, error) { close(done) })
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("index build timed out")
+	}
+}
+
+func TestSearchPanelFlow(t *testing.T) {
+	s := NewAppState()
+	tab, err := s.OpenTab(genTestPDF(t, 3)) // pages carry "page-1"…"page-3"
+	if err != nil {
+		t.Fatalf("open generated pdf: %v", err)
+	}
+	t.Cleanup(func() { s.CloseTab(tab.ID) })
+	freshSearchState(tab)
+	buildIndex(t, tab)
+
+	tab.Navigate(2, 0) // away from the first hit, so the jump is visible
+	tt := ui.NewTester(panelShell(s), 1000, 700)
+
+	// Hidden until toggled: no panel, no field, no empty-state hint.
+	if tt.HasText("Search document") || tt.HasText("Type and press Enter") {
+		t.Fatalf("panel visible before the toggle; texts %q", tt.Texts())
+	}
+
+	// The toolbar search icon opens the panel.
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.ShowSearchPanel || !tt.HasText("Type and press Enter") {
+		t.Fatalf("panel did not open: flag %v, texts %q", s.ShowSearchPanel, tt.Texts())
+	}
+
+	// Typing must NOT search: the field edits its own storage; the
+	// committed query stays empty until Enter.
+	if err := tt.Click("Search document"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("page-")
+	tt.Frame()
+	if tab.Search.Query != "" || tab.Search.Running || tab.Search.Hits != nil {
+		t.Fatalf("typing auto-ran the search: query %q running %v hits %v",
+			tab.Search.Query, tab.Search.Running, tab.Search.Hits)
+	}
+
+	// Enter runs the search; with the index pre-built the hits arrive in
+	// the same pass and the tab jumps to the first hit.
+	tt.Key(0, ui.KeyEnter)
+	if tab.Search.Query != "page-" || tab.Search.Running {
+		t.Fatalf("after Enter: query %q running %v", tab.Search.Query, tab.Search.Running)
+	}
+	if len(tab.Search.Hits) != 3 {
+		t.Fatalf("hits = %d, want 3 (one per page)", len(tab.Search.Hits))
+	}
+	if tab.CurPage != 0 || tab.Search.Current != 0 {
+		t.Fatalf("after Enter: page %d current %d, want 0/0", tab.CurPage, tab.Search.Current)
+	}
+	if !tt.HasText("3 results") || !tt.HasText("1 of 3") {
+		t.Errorf("counter row missing; texts %q", tt.Texts())
+	}
+	for p := 1; p <= 3; p++ {
+		if !tt.HasText(fmt.Sprintf("Page %d", p)) {
+			t.Errorf("hit row for page %d missing; texts %q", p, tt.Texts())
+		}
+		if !tt.HasText(fmt.Sprintf("page-%d", p)) { // the snippet text
+			t.Errorf("snippet for page %d missing; texts %q", p, tt.Texts())
+		}
+	}
+
+	// Escape right away clears the query — the field kept focus through
+	// the submit — leaving the panel open on its empty state.
+	tt.Key(0, ui.KeyEscape)
+	if tab.Search.Query != "" || tab.Search.Hits != nil {
+		t.Fatalf("Escape did not clear: query %q hits %v", tab.Search.Query, tab.Search.Hits)
+	}
+	if !s.ShowSearchPanel {
+		t.Fatalf("clearing Escape also closed the panel")
+	}
+	if !tt.HasText("Type and press Enter") {
+		t.Errorf("cleared panel lost its empty state; texts %q", tt.Texts())
+	}
+
+	// Searching again works from the cleared panel. The clear dropped the
+	// field's focus (as after any external edit), so click back in first.
+	if err := tt.Click("Search document"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Type("page-")
+	tt.Key(0, ui.KeyEnter)
+	if tab.Search.Query != "page-" || len(tab.Search.Hits) != 3 {
+		t.Fatalf("re-search failed: query %q hits %d", tab.Search.Query, len(tab.Search.Hits))
+	}
+	if tab.Search.Current != 0 || tab.CurPage != 0 {
+		t.Fatalf("after re-search: current %d page %d, want 0/0", tab.Search.Current, tab.CurPage)
+	}
+
+	// The steppers walk the hits and navigate the tab.
+	if err := tt.Click("Next hit"); err != nil {
+		t.Fatal(err)
+	}
+	if tab.Search.Current != 1 || tab.CurPage != 1 {
+		t.Fatalf("after Next: current %d page %d, want 1/1", tab.Search.Current, tab.CurPage)
+	}
+	if !tt.HasText("2 of 3") {
+		t.Errorf("position not updated; texts %q", tt.Texts())
+	}
+	if err := tt.Click("Previous hit"); err != nil {
+		t.Fatal(err)
+	}
+	if tab.Search.Current != 0 || tab.CurPage != 0 {
+		t.Fatalf("after Prev: current %d page %d, want 0/0", tab.Search.Current, tab.CurPage)
+	}
+
+	// Clicking a result row selects it and jumps to its page.
+	if err := tt.Click("Page 3"); err != nil {
+		t.Fatal(err)
+	}
+	if tab.Search.Current != 2 || tab.CurPage != 2 {
+		t.Fatalf("after row click: current %d page %d, want 2/2", tab.Search.Current, tab.CurPage)
+	}
+
+	// Focus now sits on the clicked row, so the field does not take this
+	// Escape: the window binding closes the panel (shortcuts.go).
+	tt.Key(0, ui.KeyEscape)
+	if s.ShowSearchPanel || tt.HasText("Search document") {
+		t.Fatalf("Escape did not close the panel; texts %q", tt.Texts())
+	}
+
+	// The toolbar toggle reopens the panel — with the previous search
+	// intact, since the query and hits live in the tab, not the panel —
+	// and closes it again.
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.ShowSearchPanel || !tt.HasText("Search document") || !tt.HasText("3 results") {
+		t.Fatalf("panel did not reopen with its results: flag %v, texts %q", s.ShowSearchPanel, tt.Texts())
+	}
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
+	if s.ShowSearchPanel {
+		t.Fatalf("second toggle did not close the panel")
+	}
+	tt.Frame()
+	tt.Frame()
+}
+
+func TestSearchPanelWithoutDoc(t *testing.T) {
+	s := chromeState(1)
+	tab := s.Tabs[0]
+	freshSearchState(tab)
+	tt := ui.NewTester(panelShell(s), 1000, 700)
+
+	// Open the panel, type, Enter: without a document the search settles
+	// immediately (nothing to index) and no hit steps anywhere.
+	if err := tt.Click("Search"); err != nil {
+		t.Fatal(err)
+	}
 	if err := tt.Click("Search document"); err != nil {
 		t.Fatal(err)
 	}
 	tt.Type("doc")
+	tt.Key(0, ui.KeyEnter)
 	if tab.Search.Query != "doc" {
 		t.Fatalf("Query = %q, want %q", tab.Search.Query, "doc")
 	}
 	if tab.Search.Running {
 		t.Errorf("search still Running without a document")
+	}
+	if !tt.HasText("No results") || !tt.HasText("0 results") {
+		t.Errorf("zero-hit search missing its placeholders; texts %q", tt.Texts())
 	}
 
 	// Enter with the same query and no hits neither steps nor panics.
@@ -225,16 +448,79 @@ func TestToolbarSearchWithoutDoc(t *testing.T) {
 	}
 
 	// FocusBind: a request token stored in SearchFocus (as Ctrl+F would)
-	// focuses the field, which then types. (The input's text itself is
-	// painted, not a Text node, so it never shows in Texts() — assert on
-	// the committed query instead.)
+	// focuses the panel's field, which then types. (The input's text
+	// itself is painted, not a Text node, so it never shows in Texts() —
+	// assert on the committed query instead.)
 	SearchFocus = "search-test-1"
 	tt.Frame()
 	tt.Type("x")
+	tt.Key(0, ui.KeyEnter)
 	if tab.Search.Query != "docx" {
 		t.Errorf("Query = %q, want %q (field did not take focus)", tab.Search.Query, "docx")
 	}
 	SearchFocus = ""
+
+	// Escape with text in the field clears it; a second Escape (empty
+	// field) closes the panel.
+	tt.Key(0, ui.KeyEscape)
+	if tab.Search.Query != "" {
+		t.Errorf("Query = %q after the clearing Escape", tab.Search.Query)
+	}
+	if !s.ShowSearchPanel {
+		t.Errorf("clearing Escape closed the panel")
+	}
+	tt.Key(0, ui.KeyEscape)
+	if s.ShowSearchPanel {
+		t.Errorf("second Escape did not close the panel")
+	}
+	tt.Frame()
+	tt.Frame()
+}
+
+func TestSearchPanelInViewAndShortcut(t *testing.T) {
+	s := NewAppState()
+	s.ShowSidebar = false
+	tab, err := s.OpenTab(genTestPDF(t, 1))
+	if err != nil {
+		t.Fatalf("open generated pdf: %v", err)
+	}
+	t.Cleanup(func() { s.CloseTab(tab.ID) })
+	freshSearchState(tab)
+	buildIndex(t, tab)
+
+	tt := ui.NewTester(s.View, 900, 640) // the real root view
+	tt.Frame()
+	if tt.HasText("Search document") {
+		t.Fatalf("panel visible before Ctrl+F; texts %q", tt.Texts())
+	}
+
+	// Ctrl+F opens the panel AND focuses its field with a fresh token, so
+	// typing lands without a click.
+	tt.Key(ui.Ctrl, ui.KeyF)
+	if !s.ShowSearchPanel || !tt.HasText("Type and press Enter") {
+		t.Fatalf("Ctrl+F did not open the panel: flag %v, texts %q", s.ShowSearchPanel, tt.Texts())
+	}
+	tt.Type("page-")
+	tt.Key(0, ui.KeyEnter)
+	if tab.Search.Query != "page-" || len(tab.Search.Hits) != 1 {
+		t.Fatalf("focused-field search failed: query %q hits %d", tab.Search.Query, len(tab.Search.Hits))
+	}
+	if tab.CurPage != 0 {
+		t.Errorf("CurPage = %d, want 0", tab.CurPage)
+	}
+
+	// The focused field takes the first Escape (clears); the next one
+	// goes to the window binding and closes the panel.
+	tt.Key(0, ui.KeyEscape)
+	if tab.Search.Query != "" {
+		t.Errorf("Query = %q after the clearing Escape", tab.Search.Query)
+	}
+	tt.Key(0, ui.KeyEscape)
+	if s.ShowSearchPanel || tt.HasText("Search document") {
+		t.Errorf("Escape did not close the panel; texts %q", tt.Texts())
+	}
+	tt.Frame()
+	tt.Frame()
 }
 
 func TestSidebarThumbnailsAndOutline(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	gopdfprint "gopdf/internal/print"
 )
 
 // current is the app state, installed by main at startup so the argument-
@@ -33,8 +34,8 @@ var current *AppState
 func SetState(s *AppState) { current = s }
 
 // searchFocusSeq numbers SearchFocus requests so every one is a fresh,
-// unique token (the toolbar's field FocusBinds to it; equal values would
-// not re-trigger focus).
+// unique token (the search panel's field FocusBinds to it; equal values
+// would not re-trigger focus).
 var searchFocusSeq atomic.Uint64
 
 // shortcuts declares the window-scope keyboard bindings (spec §5).
@@ -43,8 +44,13 @@ func shortcuts(c *ui.Context, s *AppState) {
 
 	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyT, func() { s.ReopenClosedTab() })
 	c.OnShortcut(ui.Ctrl, ui.KeyW, func() { s.CloseActiveTab() })
+	c.OnShortcut(ui.Ctrl, ui.KeyP, PrintActive)
 
+	// Ctrl+F opens the search panel AND stores a fresh focus token, which
+	// the panel's field (searchpanel.go) FocusBinds to: the panel opens
+	// already focused, so typing starts immediately.
 	c.OnShortcut(ui.Ctrl, ui.KeyF, func() {
+		s.ShowSearchPanel = true
 		SearchFocus = fmt.Sprintf("search-%d", searchFocusSeq.Add(1))
 	})
 
@@ -71,12 +77,17 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyF3, func() { s.StepSearch(s.Active(), +1) })
 	c.OnShortcut(ui.Shift, ui.KeyF3, func() { s.StepSearch(s.Active(), -1) })
 
-	// Escape closes the palette. While the palette's modal shows, window
-	// shortcuts wait and the modal closes on Escape by itself; this takes
-	// the frame where the flag flipped but the modal is not built yet.
+	// Escape closes the palette, else the search panel. While the
+	// palette's modal shows, window shortcuts wait and the modal closes on
+	// Escape by itself; this takes the frame where the flag flipped but
+	// the modal is not built yet. (When the panel's focused field takes
+	// Escape itself — to clear the query, or to close on an empty field —
+	// this binding does not fire: a focused element takes the key first.)
 	c.OnShortcut(0, ui.KeyEscape, func() {
 		if s.ShowPalette {
 			s.ShowPalette = false
+		} else if s.ShowSearchPanel {
+			s.ShowSearchPanel = false
 		}
 	})
 }
@@ -165,6 +176,27 @@ func OpenPath(path string) {
 
 // OpenFilePicker shows the system open dialog; exported for the File menu.
 func OpenFilePicker() { openFilePicker() }
+
+// PrintActive prints the active tab's document: the dialog blocks, so it
+// runs off the UI thread (internal/print guards reentry itself). No tab
+// or a launcher tab is a no-op.
+func PrintActive() {
+	update(func() {
+		if current == nil {
+			return
+		}
+		t := current.Active()
+		if t == nil || t.Doc == nil {
+			return
+		}
+		doc, name := t.Doc, t.Title
+		go func() {
+			if _, err := gopdfprint.Print(doc, name); err != nil {
+				log.Printf("gopdf: print: %v", err)
+			}
+		}()
+	})
+}
 
 // openFilePicker shows the native open dialog (PDF filter, per spec v1)
 // and opens what the user chose. Dialog.Open blocks until dismissed, so
