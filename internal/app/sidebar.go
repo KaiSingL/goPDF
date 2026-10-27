@@ -181,6 +181,13 @@ func requestThumb(s *AppState, t *Tab, p int, key pdf.CacheKey) {
 		thumbGens[t.ID] = t.ReloadGen
 	}
 	req := thumbsRequested[t.ID]
+	if req == nil {
+		// First request for a fresh tab: thumbGens matched (both zero) so
+		// the reset branch above did not run. Without this, req[p]=true
+		// below panics on a nil map on the very first thumbnail build.
+		req = map[int]bool{}
+		thumbsRequested[t.ID] = req
+	}
 	if req[p] {
 		return
 	}
