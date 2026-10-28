@@ -62,13 +62,16 @@ func (s *AppState) View(c *ui.Context) {
 		ui.Divider(c)      // ─ under the title bar
 		tabBar(c, s)       // C: browser-style tab strip
 		ui.Divider(c)      // ─ under the tab strip
-		toolbar(c, s)      // C: back/forward, zoom, pages, search/print
-		if s.ShowGoTo {
-			gotoRow(c, s) // the "Go to page" field the page indicator opens
-			ui.Divider(c) // ─ under the go-to row
-		} else {
-			ui.Divider(c) // ─ under the toolbar
+		// The toolbar band: only for a document tab — a launcher tab shows
+		// the same chrome as the initial no-tabs state (tab strip, then
+		// straight to the launcher content). The go-to popover anchors to
+		// the toolbar's page indicator, so it builds only here, same frame.
+		indicator := toolbar(c, s) // C: back/forward, zoom, pages, search/print
+		if s.ShowGoTo && indicator == (ui.Element{}) {
+			s.ShowGoTo = false // the tab went launcher (or away): the field goes
 		}
+		gotoField(c, s, indicator)
+		ui.Divider(c) // ─ under the toolbar
 
 		// Content: sidebar (C) beside the page area (B), which fills the
 		// rest, and — when toggled — the search results panel (D) on the

@@ -26,13 +26,16 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// toolbar renders the second bar for the active tab; it shows nothing
-// without a tab.
-func toolbar(c *ui.Context, s *AppState) {
+// toolbar renders the second bar for the active document tab and returns
+// the page indicator (the go-to popover anchors to it). Launcher tabs
+// (no document) render nothing — they show the launcher page, the same
+// chrome as the initial no-tabs state.
+func toolbar(c *ui.Context, s *AppState) ui.Element {
 	t := s.Active()
-	if t == nil {
-		return
+	if t == nil || t.IsEmpty() {
+		return ui.Element{}
 	}
+	var indicator ui.Element // returned: the go-to popover anchors to it
 	ui.Toolbar(c, func() {
 		// Section 1 — document navigation: the sidebar toggle (spec §4
 		// update) and the per-tab history.
@@ -79,10 +82,9 @@ func toolbar(c *ui.Context, s *AppState) {
 		prev.Children(func() { ui.Icon(c, chromeIcons.chevLeft).FontSize(16) })
 		prev.OnClick(prevPage(s))
 
-		indicator := ui.Button(c, fmt.Sprintf("%d / %d", t.CurPage+1, t.NumPages)).
+		indicator = ui.Button(c, fmt.Sprintf("%d / %d", t.CurPage+1, t.NumPages)).
 			Label("Go to page").Tooltip("Go to page")
 		indicator.OnClick(func() { s.ToggleGoTo() })
-
 		next := ui.Button(c, "").Label("Next page").Tooltip("Next page (Page Down)").
 			Disabled(t.CurPage >= t.NumPages-1)
 		next.Children(func() { ui.Icon(c, chromeIcons.chevRight).FontSize(16) })
@@ -94,16 +96,13 @@ func toolbar(c *ui.Context, s *AppState) {
 		ui.Spacer(c)
 
 		// Section 4 — flush right: search (it toggles the right-side
-		// results panel, searchpanel.go), share (v1 non-goal, spec §2),
-		// print (the same PrintActive as Ctrl+P and the File menu) and
-		// the more menu. The comment feature is not in v1, and a
-		// permanently disabled button is noise, not a promise.
+		// results panel, searchpanel.go), print (the same PrintActive as
+		// Ctrl+P and the File menu) and the more menu. Share and comment
+		// are v1 non-goals (spec §2), and permanently disabled buttons
+		// are noise, not promises — they stay out.
 		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
 		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })
 		search.OnClick(func() { s.ShowSearchPanel = !s.ShowSearchPanel })
-
-		share := ui.Button(c, "").Label("Share").Disabled(true).Tooltip("Sharing is not available in this version")
-		share.Children(func() { ui.Icon(c, chromeIcons.share).FontSize(16) })
 
 		print := ui.Button(c, "").Label("Print").Tooltip("Print (Ctrl+P)")
 		print.Children(func() { ui.Icon(c, chromeIcons.printer).FontSize(16) })
@@ -126,6 +125,7 @@ func toolbar(c *ui.Context, s *AppState) {
 			}
 		})
 	}).Label("Document")
+	return indicator
 }
 
 // goToFocusSeq numbers GoTo focus requests so every open is a fresh,
@@ -133,7 +133,7 @@ func toolbar(c *ui.Context, s *AppState) {
 // re-focus an already-built field).
 var goToFocusSeq atomic.Uint64
 
-// ToggleGoTo opens or closes the go-to row, refreshing the focus token
+// ToggleGoTo opens or closes the go-to field, refreshing the focus token
 // on open so the field is ready to type in.
 func (s *AppState) ToggleGoTo() {
 	s.ShowGoTo = !s.ShowGoTo
@@ -156,34 +156,49 @@ func pageEditFor(t *Tab) *string {
 	return e
 }
 
-// gotoRow is the "Go to page" field that appears under the toolbar when
-// the page indicator opens it (View builds it between the toolbar and
-// the content): Enter goes to the typed page and closes the row; invalid
-// input resets to the placeholder, as the old status-bar field did.
-func gotoRow(c *ui.Context, s *AppState) {
+// gotoField is the "Go to page" popover: a small bordered panel floating
+// under the toolbar's page indicator — ui.Overlay + AttachTo, mygo's
+// popover idiom, so it follows the indicator and flips aside where it
+// would overflow the window. Enter goes to the typed page and closes the
+// panel; a press anywhere else closes it (PressedOutside, which counts a
+// press on the indicator itself as inside, so the toggle stays clean);
+// Escape in the field closes it too. View builds it after the toolbar,
+// in the same frame as the indicator.
+func gotoField(c *ui.Context, s *AppState, indicator ui.Element) {
 	t := s.Active()
-	if t == nil {
+	if t == nil || !s.ShowGoTo || indicator == (ui.Element{}) {
 		return
 	}
 	th := c.Theme()
 	edit := pageEditFor(t)
-	ui.Row(c.Key("goto-row")).Height(34).PaddingX(th.Space(2)).
-		Gap(th.Space(2)).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "Go to page").FontSize(12).TextColor(th.TextMuted)
-		in := ui.TextInput(c, edit).
-			Label("Go to page").
-			Width(72).
-			Placeholder(fmt.Sprintf("%d", t.CurPage+1)).
-			FontSize(12)
-		in.FocusBind(&GoToFocus, GoToFocus) // opening the row focuses it
-		if in.Submitted() {
-			n, err := strconv.Atoi(strings.TrimSpace(*edit))
-			*edit = "" // reset in every case; the placeholder shows the page
-			if err == nil {
-				t.Navigate(n-1, 0)
-				s.ShowGoTo = false // it went: close the row
+	ui.Overlay(c, func() {
+		panel := ui.Column(c).Width(200).Padding(th.Space(1.5)).
+			Gap(th.Space(1)).
+			Background(th.Surface).Border(1, th.Border).Radius(th.Space(1)).
+			Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.25)).
+			AttachTo(indicator, ui.AnchorBottomLeft, ui.AnchorTopLeft)
+		panel.Children(func() {
+			ui.Text(c, "Go to page").FontSize(12).TextColor(th.TextMuted)
+			in := ui.TextInput(c, edit).
+				Label("Go to page").
+				Placeholder(fmt.Sprintf("%d", t.CurPage+1)).
+				FontSize(12)
+			in.FocusBind(&GoToFocus, GoToFocus) // opening the panel focuses it
+			if in.Submitted() {
+				n, err := strconv.Atoi(strings.TrimSpace(*edit))
+				*edit = "" // reset in every case; the placeholder shows the page
+				if err == nil {
+					t.Navigate(n-1, 0)
+					s.ShowGoTo = false // it went: close the panel
+				}
 			}
+			if in.Shortcut(0, ui.KeyEscape) {
+				s.ShowGoTo = false
+			}
+			ui.Textf(c, "of %d", t.NumPages).FontSize(12).TextColor(th.TextMuted)
+		})
+		if panel.PressedOutside() {
+			s.ShowGoTo = false
 		}
-		ui.Textf(c, "of %d", t.NumPages).FontSize(12).TextColor(th.TextMuted)
 	})
 }

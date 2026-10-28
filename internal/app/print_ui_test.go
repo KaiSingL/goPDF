@@ -13,15 +13,20 @@ import (
 
 // TestToolbarPrintButton: the right section carries a Print button,
 // wired for keyboard/a11y like its siblings (Find is by accessible
-// label).
+// label). Share is gone with Comment: v1 non-goals don't get dead
+// buttons. The Print button itself is never CLICKED here — PrintActive
+// opens the real system print dialog on a worker goroutine, which would
+// block on (and pop up over) the test machine.
 func TestToolbarPrintButton(t *testing.T) {
-	s := chromeState(1)
+	s := reproState(t, 1)
 	tt := ui.NewTester(toolbarView(s), 1200, 120)
 	if _, ok := tt.Find("Print"); !ok {
 		t.Fatalf("print button missing from the toolbar; texts %q", tt.Texts())
 	}
-	if _, ok := tt.Find("Comment"); ok {
-		t.Errorf("the dead Comment button is back; texts %q", tt.Texts())
+	for _, gone := range []string{"Comment", "Share"} {
+		if _, ok := tt.Find(gone); ok {
+			t.Errorf("the dead %s button is back; texts %q", gone, tt.Texts())
+		}
 	}
 }
 

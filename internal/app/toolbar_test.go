@@ -12,8 +12,8 @@ import (
 // TestToolbarPageSection: the indicator follows the page, Previous page
 // is a no-op on the first page, Next page a no-op on the last.
 func TestToolbarPageSection(t *testing.T) {
-	s := chromeState(1) // one tab, 5 pages, no Doc: pure UI
-	tab := s.Tabs[0]
+	s := reproState(t, 5) // doc tab: the toolbar builds for these
+	tab := s.Active()
 	tt := ui.NewTester(toolbarView(s), 1200, 120)
 
 	if !tt.HasText("1 / 5") {
@@ -59,7 +59,7 @@ func TestToolbarPageSection(t *testing.T) {
 // TestToolbarSearchOnTheRight: search moved to the right section — it
 // still toggles the results panel, alongside the new page section.
 func TestToolbarSearchOnTheRight(t *testing.T) {
-	s := chromeState(1)
+	s := reproState(t, 1)
 	tt := ui.NewTester(toolbarView(s), 1200, 120)
 	if s.ShowSearchPanel {
 		t.Fatal("panel should start hidden")
@@ -70,7 +70,7 @@ func TestToolbarSearchOnTheRight(t *testing.T) {
 	if !s.ShowSearchPanel {
 		t.Fatal("Search no longer toggles the results panel")
 	}
-	if !tt.HasText("1 / 5") {
+	if !tt.HasText("1 / 1") {
 		t.Fatalf("page indicator missing; texts %q", tt.Texts())
 	}
 }

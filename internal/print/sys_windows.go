@@ -61,10 +61,12 @@ type dialogResult struct {
 	copies           int
 }
 
-// PRINTDLGW for amd64. Field order is exactly the SDK's; the struct is
-// passed by pointer so Go-side padding must match Windows x64 (every
-// pointer/uintptr field 8-aligned — the two uint16 pairs pack into the
-// holes before the following pointers).
+// PRINTDLGW for amd64. Field order is exactly the SDK's (commdlg.h's
+// tagPDW): 20 fields, 120 bytes — the trailing hPrintTemplate and
+// hSetupTemplate are NOT droppable: PrintDlgW checks lStructSize against
+// its own sizeof and fails with PDERR_STRUCTSIZE before it even tries to
+// open when the struct is short (a "print" that silently did nothing).
+// The HGLOBALs stay nil: we use no resource templates.
 type printDlg struct {
 	lStructSize         uint32
 	hwndOwner           uintptr
@@ -83,6 +85,8 @@ type printDlg struct {
 	lpfnSetupHook       uintptr
 	lpPrintTemplateName uintptr
 	lpSetupTemplateName uintptr
+	hPrintTemplate      uintptr
+	hSetupTemplate      uintptr
 }
 
 // comInitialize pins the calling goroutine's thread with an STA COM

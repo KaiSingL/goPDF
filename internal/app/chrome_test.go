@@ -137,8 +137,8 @@ func TestTabStripSelectAndClose(t *testing.T) {
 }
 
 func TestToolbarHistoryAndZoom(t *testing.T) {
-	s := chromeState(1)
-	tab := s.Tabs[0]
+	s := reproState(t, 5) // real document: the toolbar builds for doc tabs only
+	tab := s.Active()
 	tt := ui.NewTester(toolbarView(s), 1200, 120)
 
 	// Back/forward start disabled: clicking is a no-op, not a panic.
@@ -212,27 +212,24 @@ func TestToolbarHistoryAndZoom(t *testing.T) {
 }
 
 func TestToolbarSearchWithoutDoc(t *testing.T) {
-	s := chromeState(1)
+	// A launcher tab shows the launcher page, not the toolbar — the same
+	// chrome as the initial no-tabs state. No search button, no controls.
+	s := chromeState(1) // stub tab, Doc nil: launcher
 	tt := ui.NewTester(toolbarView(s), 1000, 120)
-
-	// The toolbar carries only the search ICON now (the field moved into
-	// the panel): clicking toggles the flag, no field is built here.
-	if err := tt.Click("Search"); err != nil {
-		t.Fatal(err)
-	}
-	if !s.ShowSearchPanel {
-		t.Fatalf("Search icon did not set ShowSearchPanel")
-	}
-	if err := tt.Click("Search"); err != nil {
-		t.Fatal(err)
-	}
-	if s.ShowSearchPanel {
-		t.Fatalf("second click did not clear ShowSearchPanel")
-	}
-	tt.Frame() // extra frames while elements come and go
 	tt.Frame()
-	if tt.HasText("Search document") {
-		t.Errorf("toolbar still builds a search field; texts %q", tt.Texts())
+	if _, ok := tt.Find("Search"); ok {
+		t.Fatalf("launcher tab still builds the toolbar; texts %q", tt.Texts())
+	}
+	if _, ok := tt.Find("Back"); ok {
+		t.Errorf("launcher tab builds history buttons; texts %q", tt.Texts())
+	}
+
+	// And the no-tabs state is the same nothing.
+	empty := NewAppState()
+	tt2 := ui.NewTester(toolbarView(empty), 1000, 120)
+	tt2.Frame()
+	if _, ok := tt2.Find("Search"); ok {
+		t.Errorf("no-tabs state builds a toolbar; texts %q", tt2.Texts())
 	}
 }
 
@@ -448,11 +445,12 @@ func TestSearchPanelWithoutDoc(t *testing.T) {
 	freshSearchState(tab)
 	tt := ui.NewTester(panelShell(s), 1000, 700)
 
-	// Open the panel, type, Enter: without a document the search settles
-	// immediately (nothing to index) and no hit steps anywhere.
-	if err := tt.Click("Search"); err != nil {
-		t.Fatal(err)
-	}
+	// Open the panel (no toolbar button on a launcher tab: the flag goes
+	// up directly, as the searchpanel visibility contract allows), type,
+	// Enter: without a document the search settles immediately (nothing
+	// to index) and no hit steps anywhere.
+	s.ShowSearchPanel = true
+	tt.Frame()
 	if err := tt.Click("Search document"); err != nil {
 		t.Fatal(err)
 	}
@@ -632,13 +630,13 @@ func TestSidebarWithoutDoc(t *testing.T) {
 	}
 }
 
-// TestGoToRow: the toolbar's page indicator opens the go-to row under
-// the toolbar; a number navigates and closes the row, garbage resets
-// without navigating, out-of-range clamps, and Esc closes. (The row
-// replaced the status bar's inline page field.)
+// TestGoToRow: the toolbar's page indicator opens the go-to field — a
+// popover anchored under the indicator — a number navigates and closes
+// it, garbage resets without navigating, out-of-range clamps, and Esc
+// (in the field) closes.
 func TestGoToRow(t *testing.T) {
-	s := chromeState(1)
-	tab := s.Tabs[0]
+	s := reproState(t, 5)
+	tab := s.Active()
 	tt := ui.NewTester(s.View, 900, 600)
 	pumpToPage0(t, tt)
 
@@ -651,10 +649,10 @@ func TestGoToRow(t *testing.T) {
 	}
 	tt.Frame()
 	if !s.ShowGoTo || !tt.HasText("of 5") {
-		t.Fatalf("go-to row did not open; texts %q", tt.Texts())
+		t.Fatalf("go-to field did not open; texts %q", tt.Texts())
 	}
 
-	// A valid number navigates (1-based) and closes the row.
+	// A valid number navigates (1-based) and closes the field.
 	tt.Type("3")
 	tt.Key(0, ui.KeyEnter)
 	tt.Frame()
@@ -662,10 +660,10 @@ func TestGoToRow(t *testing.T) {
 		t.Fatalf("CurPage = %d, want 2", tab.CurPage)
 	}
 	if s.ShowGoTo {
-		t.Fatal("Enter did not close the go-to row")
+		t.Fatal("Enter did not close the go-to field")
 	}
 
-	// Garbage resets without navigating (the row stays for a retry).
+	// Garbage resets without navigating (the field stays for a retry).
 	if err := tt.Click("Go to page"); err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +675,7 @@ func TestGoToRow(t *testing.T) {
 		t.Fatalf("garbage input navigated to %d", tab.CurPage)
 	}
 	if !s.ShowGoTo {
-		t.Fatal("garbage closed the row; it should stay for a retry")
+		t.Fatal("garbage closed the field; it should stay for a retry")
 	}
 
 	// Out-of-range numbers clamp.
@@ -688,7 +686,7 @@ func TestGoToRow(t *testing.T) {
 		t.Fatalf("CurPage = %d, want 4 (clamped)", tab.CurPage)
 	}
 
-	// Esc closes an open row.
+	// Esc in the field closes it.
 	if err := tt.Click("Go to page"); err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +694,20 @@ func TestGoToRow(t *testing.T) {
 	tt.Key(0, ui.KeyEscape)
 	tt.Frame()
 	if s.ShowGoTo {
-		t.Fatal("Esc did not close the go-to row")
+		t.Fatal("Esc did not close the go-to field")
+	}
+
+	// A press on another control closes it too (PressedOutside).
+	if err := tt.Click("Go to page"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if err := tt.Click("Zoom in"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if s.ShowGoTo {
+		t.Fatal("a press elsewhere did not close the go-to field")
 	}
 }
 
