@@ -25,6 +25,7 @@ package app
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -62,13 +63,47 @@ func SetWindow(w *mygo.Window) { window = w }
 var SearchFocus string
 
 // update runs fn on the UI thread. Safe from any goroutine. Before the
-// window exists (unit tests) fn runs inline on the calling goroutine.
+// window exists (unit tests) fn runs inline on the calling goroutine —
+// ONLY for callers already on the main thread; workers must use
+// updateFromWorker instead.
 func update(fn func()) {
 	if window != nil {
 		window.Update(fn)
 		return
 	}
 	fn()
+}
+
+var (
+	pendMu  sync.Mutex
+	pending []func()
+)
+
+// updateFromWorker runs fn on the UI thread from a WORKER goroutine.
+// With a window it is Window.Update (the real hop). In tests — no
+// window, update() would run inline ON THE WORKER and race the main
+// thread's frame builds — fn is queued and the next build runs it at its
+// top (drainPending), so pumping frames flushes it.
+func updateFromWorker(fn func()) {
+	if window != nil {
+		window.Update(fn)
+		return
+	}
+	pendMu.Lock()
+	pending = append(pending, fn)
+	pendMu.Unlock()
+}
+
+// drainPending runs queued updateFromWorker closures; the root view calls
+// it first thing every build.
+func drainPending() {
+	pendMu.Lock()
+	fns := pending
+	pending = nil
+	pendMu.Unlock()
+	for _, f := range fns {
+		f()
+	}
 }
 
 // Update is the exported variant of update for package main.

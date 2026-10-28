@@ -254,6 +254,8 @@ func freshSearchState(tab *Tab) {
 func panelShell(s *AppState) func(*ui.Context) {
 	return func(c *ui.Context) {
 		shortcuts(c, s)
+		drainPending() // the harness omits s.View's drain; worker-queued
+		// search completions must land here too
 		ui.Column(c).Fill().Children(func() {
 			toolbar(c, s)
 			ui.Row(c).Fill().Grow(1).Children(func() {
@@ -321,12 +323,19 @@ func TestSearchPanelFlow(t *testing.T) {
 			tab.Search.Query, tab.Search.Running, tab.Search.Hits)
 	}
 
-	// Enter runs the search; with the index pre-built the hits arrive in
-	// the same pass and the tab jumps to the first hit.
+	// Enter runs the search: fz_search quads complete on the doc worker
+	// and land through the frame-drained queue, so pump until Running
+	// flips false (the prefetched index keeps this fast).
 	tt.Key(0, ui.KeyEnter)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && tab.Search.Running {
+		tt.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
 	if tab.Search.Query != "page-" || tab.Search.Running {
 		t.Fatalf("after Enter: query %q running %v", tab.Search.Query, tab.Search.Running)
 	}
+	tt.Frame()
 	if len(tab.Search.Hits) != 3 {
 		t.Fatalf("hits = %d, want 3 (one per page)", len(tab.Search.Hits))
 	}

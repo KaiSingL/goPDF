@@ -439,7 +439,7 @@ func (s *AppState) RunSearch(t *Tab) {
 	}
 	t.Doc.IndexAsync(func(ix *pdf.Index, err error) {
 		finish := func(hits []pdf.SearchHit) {
-			update(func() { // hop to the UI thread; see components.go
+			updateFromWorker(func() { // worker-side: hop, never inline
 				cur := s.Active()
 				if cur == nil || cur.ID != t.ID || cur.Search.Query != q {
 					return // stale: tab closed or query changed

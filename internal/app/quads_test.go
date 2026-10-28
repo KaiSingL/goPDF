@@ -74,8 +74,10 @@ func TestCroppedPageOriginMapping(t *testing.T) {
 	buildIndex(t, tab)
 	tab.StartSearch("cropmark")
 	s.RunSearch(tab)
+	tt := ui.NewTester(s.View, 1200, 800)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && len(tab.Search.Hits) == 0 {
+		tt.Frame() // drains the worker-queued finish on the UI thread
 		time.Sleep(20 * time.Millisecond)
 	}
 	if len(tab.Search.Hits) == 0 {

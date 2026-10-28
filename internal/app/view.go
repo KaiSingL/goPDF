@@ -52,6 +52,7 @@ func slidePanel(e ui.Element, full float32, want, cond bool) float32 {
 // thread whenever a frame is due.
 func (s *AppState) View(c *ui.Context) {
 	shortcuts(c, s) // D: app-wide keyboard bindings, window scope (first)
+	drainPending()  // run worker-queued updates (tests; window hops directly)
 
 	// Fill the window: the chrome bars take their natural height and the
 	// content row grows into the rest. Dividers separate the bands and the
