@@ -56,6 +56,22 @@ type SearchState struct {
 	Current int // index into Hits; -1 when no hit selected
 }
 
+// SelectionState is the text-selection state of one tab (selection.go;
+// UI thread only — pointer events and the index hop land there). The
+// geometry is page space (points, WITH the box origin, unrotated), so a
+// selection survives zoom, rotation and scrolling.
+type SelectionState struct {
+	Active   bool // a selection exists (drag in progress or finished)
+	Dragging bool // the button is still down
+	Page     int
+	Anchor   [2]float64 // press point, page space
+	Cur      [2]float64 // current drag point, page space (clamped)
+
+	Spans     []pdf.TextSpan // the covered spans — the copy source
+	HaveSpans bool           // spans resolved (index was ready)
+	pending   bool           // an index build for the selection is in flight
+}
+
 // HistoryEntry is one back/forward navigation stop.
 type HistoryEntry struct {
 	Page    int
@@ -78,6 +94,7 @@ type Tab struct {
 	Future  []HistoryEntry // forward stack
 
 	Search  SearchState
+	Sel     SelectionState
 	Outline []pdf.OutlineNode
 
 	// Cache holds rendered page images; thread-safe (see pdf.PageCache).

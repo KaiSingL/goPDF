@@ -230,7 +230,7 @@ func viewer(c *ui.Context, s *AppState) {
 					// requested FIRST on jumps — the visible page is what the
 					// user is waiting for, not its neighbors.
 					for _, i := range centerOut(lo, hi, t.CurPage) {
-						buildPage(c, s, t, i, g.boxes[i], renderZ, z)
+						buildPage(c, s, t, i, g.boxes[i], g, renderZ, z)
 					}
 					ui.Box(c).Height(botSpacer).Shrink(0)
 				})
@@ -403,23 +403,31 @@ var (
 // buildPage builds one page: a white surface with shadow and radius
 // (spec §4), the rendered bitmap scaled to fit, a placeholder until the
 // render arrives, and the search-hit highlights painted over it.
-func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, renderZ, z float64) {
+// buildPage builds one page of the strip: the surface, its bitmap (or
+// the placeholder), the search highlights and the text selection
+// (selection.go), and the input handler — a left-drag selects text,
+// zoom gestures pass through to the viewer's with the anchor re-based.
+func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, renderZ, z float64) {
 	c.Key(fmt.Sprintf("gopdf-page-%d", i))
 	e := ui.Box(c).Size(box.w, box.h).Shrink(0).
 		Background(pageWhite).
 		Radius(pageRadius).
 		Shadow(0, 6, 24, 0, pageShadow).
-		Clip()
+		Clip().
+		Cursor(ui.CursorText).
+		HandleInput(func(ev ui.InputEvent) bool { return pageBoxInput(s, t, g, i, ev) })
 
 	// Highlights are computed at build time (plain data) and painted in
 	// the draw callback, which may run repeatedly.
 	hits := hitRects(t, i, z)
-	var curCol, otherCol ui.Color
-	if len(hits) > 0 {
+	selRects := selPaintRects(t, i, pageDipScale(t, i, z))
+	var curCol, otherCol, selCol ui.Color
+	if len(hits) > 0 || len(selRects) > 0 {
 		curCol, otherCol = hitCurLight, hitOtherLight
 		if c.Theme().Dark {
 			curCol, otherCol = hitCurDark, hitOtherDark
 		}
+		selCol = c.Theme().Accent.Alpha(0.30)
 	}
 
 	bm := pageBitmap(t, i, renderZ, z)
@@ -434,7 +442,7 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, renderZ, 
 			ui.Textf(c, "Page %d", i+1).TextColor(c.Theme().TextMuted)
 		})
 	})
-	if len(hits) > 0 {
+	if len(hits) > 0 || len(selRects) > 0 {
 		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
 			for _, h := range hits {
 				col := otherCol
@@ -448,8 +456,45 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, renderZ, 
 					H: h.rect[3],
 				}, col, 2)
 			}
+			// The selection paints above the hits: it is the user's own
+			// action, the thing under the pointer right now.
+			for _, rc := range selRects {
+				p.Fill(ui.Rect{
+					X: r.X + rc[0],
+					Y: r.Y + rc[1],
+					W: rc[2],
+					H: rc[3],
+				}, selCol, 2)
+			}
 		})
 	}
+}
+
+// pageInput is the input handler of one page box (the innermost handler
+// where the pointer is — it shadows the scroll's while over a page). A
+// plain left press starts a text selection; the moves and release of a
+// captured drag keep arriving here in page-local DIPs. Zoom gestures
+// (InputZoom, Ctrl+wheel) forward to the viewer's handler with the
+// anchor re-based from page-local to viewport space, since viewerZoom
+// expects viewport Y. Everything else is left unclaimed: plain wheel
+// still scrolls (the engine's own scroll handling runs when a handler
+// declines), plain clicks have nothing to do.
+func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
+	switch {
+	case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
+		s.StartSelection(t, i, ev.X, ev.Y)
+		return true
+	case ev.Kind == ui.InputPointerMove && t.Sel.Dragging && t.Sel.Page == i:
+		s.ExtendSelection(t, i, ev.X, ev.Y)
+		return true
+	case ev.Kind == ui.InputPointerUp && t.Sel.Dragging:
+		s.FinishSelection(t)
+		return true
+	case ev.Kind == ui.InputZoom || (ev.Kind == ui.InputScroll && ev.Mods&ui.Ctrl != 0):
+		ev.Y = g.boxes[i].top + ev.Y - viewerScroll.Y // local → viewport
+		return viewerInput(s, g, ev)
+	}
+	return false
 }
 
 // pageBitmap returns the bitmap to show for page i: the render at the

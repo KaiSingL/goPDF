@@ -76,7 +76,6 @@ func TestHighlightScaleMatchesDrawnPage(t *testing.T) {
 	if abs64(float64(boxH)-ph*kEff) > 1 {
 		t.Fatalf("precondition: box height %.1f ≠ %.1f — pageDipSize is not a pure scale", boxH, ph*kEff)
 	}
-
 	buildIndex(t, tab)
 	tab.StartSearch("page")
 	s.RunSearch(tab)
@@ -112,7 +111,7 @@ func TestHighlightScaleMatchesDrawnPage(t *testing.T) {
 		g, e := got[i], exp[i]
 		if abs64(float64(g.rect[2])-e.w) > 0.5 || abs64(float64(g.rect[3])-e.h) > 0.5 {
 			t.Fatalf("rect %d size (%.1f,%.1f), want (%.1f,%.1f) — scale %.4f not the drawn scale %.4f",
-				i, g.rect[2], g.rect[3], e.w, e.h, float64(g.rect[2])/max64(1, e.w), kEff)
+				i, g.rect[2], g.rect[3], e.w, e.h, float64(g.rect[2])/max(1, e.w), kEff)
 		}
 		if g.rect[0] < -0.5 || g.rect[1] < -0.5 ||
 			float64(g.rect[0]+g.rect[2]) > float64(boxW)+0.5 ||
@@ -121,20 +120,6 @@ func TestHighlightScaleMatchesDrawnPage(t *testing.T) {
 				i, g.rect[0], g.rect[1], g.rect[2], g.rect[3], boxW, boxH)
 		}
 	}
-}
-
-func abs64(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
-func max64(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // TestCroppedPageOriginMapping: with a page whose MediaBox starts at

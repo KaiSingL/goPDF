@@ -60,6 +60,17 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(ui.Ctrl, ui.KeyMinus, zoomOut(s))
 	c.OnShortcut(ui.Ctrl, ui.Key0, zoomReset(s))
 
+	// Text selection (selection.go): Ctrl+C copies the viewer selection.
+	// A focused text input takes Ctrl+C first for its own copy — this is
+	// the window-scope fallback, as with the arrows.
+	c.OnShortcut(ui.Ctrl, ui.KeyC, func() {
+		if t := s.Active(); t != nil {
+			if text := t.SelectionText(); text != "" {
+				c.WriteClipboard(text)
+			}
+		}
+	})
+
 	// Page turns and jumps. Left/Right turn pages too: focused text inputs
 	// take the arrows first for the caret and focused tree items to
 	// open/close (editor.wants / arrows() in the pinned source), so these
@@ -77,17 +88,24 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyF3, func() { s.StepSearch(s.Active(), +1) })
 	c.OnShortcut(ui.Shift, ui.KeyF3, func() { s.StepSearch(s.Active(), -1) })
 
-	// Escape closes the palette, else the search panel. While the
-	// palette's modal shows, window shortcuts wait and the modal closes on
-	// Escape by itself; this takes the frame where the flag flipped but
-	// the modal is not built yet. (When the panel's focused field takes
-	// Escape itself — to clear the query, or to close on an empty field —
-	// this binding does not fire: a focused element takes the key first.)
+	// Escape closes the palette, else the search panel, else clears a
+	// text selection (one binding: a duplicate would shadow whichever
+	// registered first). While the palette's modal shows, window
+	// shortcuts wait and the modal closes on Escape by itself; this takes
+	// the frame where the flag flipped but the modal is not built yet.
+	// (When the panel's focused field takes Escape itself - to clear the
+	// query, or to close on an empty field - this binding does not fire:
+	// a focused element takes the key first.)
 	c.OnShortcut(0, ui.KeyEscape, func() {
-		if s.ShowPalette {
+		switch {
+		case s.ShowPalette:
 			s.ShowPalette = false
-		} else if s.ShowSearchPanel {
+		case s.ShowSearchPanel:
 			s.ShowSearchPanel = false
+		default:
+			if t := s.Active(); t != nil && t.Sel.Active {
+				t.ClearSelection()
+			}
 		}
 	})
 }
