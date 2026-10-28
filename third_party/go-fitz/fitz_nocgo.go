@@ -1,0 +1,1243 @@
+//go:build !cgo || nocgo
+
+package fitz
+
+import (
+	"image"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
+)
+
+// Document represents fitz document.
+type Document struct {
+	ctx    *fzContext
+	data   []byte // binds data to the Document lifecycle avoiding premature GC
+	doc    *fzDocument
+	mtx    sync.Mutex
+	stream *fzStream
+}
+
+// New returns new fitz document.
+func New(filename string) (f *Document, err error) {
+	f = &Document{}
+
+	filename, err = filepath.Abs(filename)
+	if err != nil {
+		return
+	}
+
+	if _, e := os.Stat(filename); e != nil {
+		err = ErrNoSuchFile
+		return
+	}
+
+	f.ctx = fzNewContextImp(nil, nil, uint64(MaxStore), FzVersion)
+	if f.ctx == nil {
+		err = ErrCreateContext
+		return
+	}
+
+	silenceWarnings(f.ctx)
+
+	fzRegisterDocumentHandlers(f.ctx)
+
+	f.doc = fzOpenDocument(f.ctx, filename)
+	if f.doc == nil {
+		err = ErrOpenDocument
+		return
+	}
+
+	ret := fzNeedsPassword(f.ctx, f.doc)
+	v := int(ret) != 0
+	if v {
+		err = ErrNeedsPassword
+	}
+
+	return
+}
+
+// NewFromMemory returns new fitz document from byte slice.
+func NewFromMemory(b []byte) (f *Document, err error) {
+	if len(b) == 0 {
+		return nil, ErrEmptyBytes
+	}
+	f = &Document{}
+
+	f.ctx = fzNewContextImp(nil, nil, uint64(MaxStore), FzVersion)
+	if f.ctx == nil {
+		err = ErrCreateContext
+		return
+	}
+
+	silenceWarnings(f.ctx)
+
+	fzRegisterDocumentHandlers(f.ctx)
+
+	f.stream = fzOpenMemory(f.ctx, unsafe.SliceData(b), uint64(len(b)))
+	if f.stream == nil {
+		err = ErrOpenMemory
+		return
+	}
+
+	magic := contentType(b)
+	if magic == "" {
+		err = ErrOpenMemory
+		return
+	}
+
+	f.data = b
+
+	f.doc = fzOpenDocumentWithStream(f.ctx, magic, f.stream)
+	if f.doc == nil {
+		err = ErrOpenDocument
+	}
+
+	ret := fzNeedsPassword(f.ctx, f.doc)
+	v := int(ret) != 0
+	if v {
+		err = ErrNeedsPassword
+	}
+
+	return
+}
+
+// NewFromReader returns new fitz document from io.Reader.
+func NewFromReader(r io.Reader) (f *Document, err error) {
+	b, e := io.ReadAll(r)
+	if e != nil {
+		err = e
+		return
+	}
+
+	f, err = NewFromMemory(b)
+
+	return
+}
+
+// NumPage returns total number of pages in document.
+func (f *Document) NumPage() int {
+	return fzCountPages(f.ctx, f.doc)
+}
+
+// Image returns the page at its native resolution (300 DPI if it has no images), cropped to a single full-page image.
+func (f *Document) Image(pageNumber int) (*image.RGBA, error) {
+	dpi, x0, y0, x1, y1, crop := f.pageInfo(pageNumber)
+	if dpi <= 0 {
+		dpi = 300.0
+	}
+
+	img, err := f.ImageDPI(pageNumber, dpi)
+	if err != nil {
+		return nil, err
+	}
+
+	if crop {
+		img = cropImage(img, x0, y0, x1, y1, dpi)
+	}
+
+	return img, nil
+}
+
+// pageInfo returns the native resolution and, for a single full-page image, its bbox (points) with crop=true.
+func (f *Document) pageInfo(pageNumber int) (dpi, x0, y0, x1, y1 float64, crop bool) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	bounds := boundPage(f.ctx, page)
+	parea := float64((bounds.X1 - bounds.X0) * (bounds.Y1 - bounds.Y0))
+
+	text := newStextPage(f.ctx, bounds)
+	defer fzDropStextPage(f.ctx, text)
+
+	var opts fzStextOptions
+	opts.Flags = fzStextPreserveImages
+
+	device := fzNewStextDevice(f.ctx, text, &opts)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+
+	runPageContents(f.ctx, page, device, fzIdentity)
+	fzCloseDevice(f.ctx, device)
+	fzDropDevice(f.ctx, device)
+
+	var barea float64
+	var box fzRect
+	hasText := false
+
+	for blk := text.FirstBlock; blk != nil; blk = blk.Next {
+		if blk.Type == fzStextBlockText {
+			hasText = true
+			continue
+		}
+		if blk.Type != fzStextBlockImage {
+			continue
+		}
+
+		img := *(**fzImage)(unsafe.Pointer(&blk.U[24]))
+		bw := float64(blk.Bbox.X1 - blk.Bbox.X0)
+		bh := float64(blk.Bbox.Y1 - blk.Bbox.Y0)
+		if bw > 0 {
+			if d := float64(img.W) * 72.0 / bw; d > dpi {
+				dpi = d
+			}
+		}
+		if bh > 0 {
+			if d := float64(img.H) * 72.0 / bh; d > dpi {
+				dpi = d
+			}
+		}
+		if bw*bh > barea {
+			barea = bw * bh
+			box = blk.Bbox
+		}
+	}
+
+	crop = !hasText && parea > 0 && barea >= 0.5*parea
+
+	return dpi, float64(box.X0), float64(box.Y0), float64(box.X1), float64(box.Y1), crop
+}
+
+// ImageDPI returns image for given page number and DPI.
+func (f *Document) ImageDPI(pageNumber int, dpi float64) (*image.RGBA, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return nil, ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return nil, ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	var ctm fzMatrix
+	ctm = scale(float32(dpi/72), float32(dpi/72))
+
+	var bbox fzIRect
+	bounds = transformRect(bounds, ctm)
+	bbox = roundRect(bounds)
+
+	pixmap := fzNewPixmap(f.ctx, fzDeviceRgb(f.ctx), int(bbox.X1), int(bbox.Y1), nil, 1)
+	if pixmap == nil {
+		return nil, ErrCreatePixmap
+	}
+
+	fzClearPixmapWithValue(f.ctx, pixmap, 0xff)
+	defer fzDropPixmap(f.ctx, pixmap)
+
+	device := newDrawDevice(f.ctx, ctm, pixmap)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+	defer fzDropDevice(f.ctx, device)
+
+	runPageContents(f.ctx, page, device, fzIdentity)
+
+	fzCloseDevice(f.ctx, device)
+
+	pixels := fzPixmapSamples(f.ctx, pixmap)
+	if pixels == nil {
+		return nil, ErrPixmapSamples
+	}
+
+	img := image.NewRGBA(image.Rect(int(bbox.X0), int(bbox.Y0), int(bbox.X1), int(bbox.Y1)))
+	copy(img.Pix, unsafe.Slice(pixels, 4*bbox.X1*bbox.Y1))
+
+	return img, nil
+}
+
+// ImagePNG returns image for given page number as PNG bytes.
+func (f *Document) ImagePNG(pageNumber int, dpi float64) ([]byte, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return nil, ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return nil, ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	var ctm fzMatrix
+	ctm = scale(float32(dpi/72), float32(dpi/72))
+
+	var bbox fzIRect
+	bounds = transformRect(bounds, ctm)
+	bbox = roundRect(bounds)
+
+	pixmap := fzNewPixmap(f.ctx, fzDeviceRgb(f.ctx), int(bbox.X1), int(bbox.Y1), nil, 1)
+	if pixmap == nil {
+		return nil, ErrCreatePixmap
+	}
+
+	fzClearPixmapWithValue(f.ctx, pixmap, 0xff)
+	defer fzDropPixmap(f.ctx, pixmap)
+
+	device := newDrawDevice(f.ctx, ctm, pixmap)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+	defer fzDropDevice(f.ctx, device)
+
+	runPageContents(f.ctx, page, device, fzIdentity)
+
+	fzCloseDevice(f.ctx, device)
+
+	params := fzColorParams{1, 1, 0, 0}
+	buf := newBufferFromPixmapAsPNG(f.ctx, pixmap, params)
+	defer fzDropBuffer(f.ctx, buf)
+
+	size := fzBufferStorage(f.ctx, buf, nil)
+
+	ret := make([]byte, size)
+	copy(ret, unsafe.Slice(fzStringFromBuffer(f.ctx, buf), size))
+
+	return ret, nil
+}
+
+// Links returns slice of links for given page number.
+func (f *Document) Links(pageNumber int) ([]Link, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return nil, ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return nil, ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	links := fzLoadLinks(f.ctx, page)
+	defer fzDropLink(f.ctx, links)
+
+	linkCount := 0
+	for currLink := links; currLink != nil; currLink = currLink.Next {
+		linkCount++
+	}
+
+	if linkCount == 0 {
+		return nil, nil
+	}
+
+	gLinks := make([]Link, linkCount)
+
+	currLink := links
+	for i := 0; i < linkCount; i++ {
+		gLinks[i] = Link{
+			URI: bytePtrToString((*uint8)(unsafe.Pointer(currLink.Uri))),
+		}
+		currLink = currLink.Next
+	}
+
+	return gLinks, nil
+}
+
+// Text returns text for given page number.
+func (f *Document) Text(pageNumber int) (string, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return "", ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return "", ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	var ctm fzMatrix
+	ctm = scale(float32(72.0/72), float32(72.0/72))
+
+	text := newStextPage(f.ctx, bounds)
+	defer fzDropStextPage(f.ctx, text)
+
+	var opts fzStextOptions
+	opts.Flags = 0
+
+	device := fzNewStextDevice(f.ctx, text, &opts)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+	defer fzDropDevice(f.ctx, device)
+
+	runPageContents(f.ctx, page, device, ctm)
+
+	fzCloseDevice(f.ctx, device)
+
+	buf := fzNewBufferFromStextPage(f.ctx, text)
+	defer fzDropBuffer(f.ctx, buf)
+
+	ret := fzStringFromBuffer(f.ctx, buf)
+
+	return bytePtrToString(ret), nil
+}
+
+// HTML returns html for given page number.
+func (f *Document) HTML(pageNumber int, header bool) (string, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return "", ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return "", ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	var ctm fzMatrix
+	ctm = scale(float32(72.0/72), float32(72.0/72))
+
+	text := newStextPage(f.ctx, bounds)
+	defer fzDropStextPage(f.ctx, text)
+
+	var opts fzStextOptions
+	opts.Flags = fzStextPreserveImages
+
+	device := fzNewStextDevice(f.ctx, text, &opts)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+	defer fzDropDevice(f.ctx, device)
+
+	runPageContents(f.ctx, page, device, ctm)
+
+	fzCloseDevice(f.ctx, device)
+
+	buf := fzNewBuffer(f.ctx, 1024)
+	defer fzDropBuffer(f.ctx, buf)
+
+	out := fzNewOutputWithBuffer(f.ctx, buf)
+	defer fzDropOutput(f.ctx, out)
+
+	if header {
+		fzPrintStextHeaderAsHTML(f.ctx, out)
+	}
+	fzPrintStextPageAsHTML(f.ctx, out, text, pageNumber)
+	if header {
+		fzPrintStextTrailerAsHTML(f.ctx, out)
+	}
+
+	fzCloseOutput(f.ctx, out)
+
+	ret := fzStringFromBuffer(f.ctx, buf)
+
+	return bytePtrToString(ret), nil
+}
+
+// SVG returns svg document for given page number.
+func (f *Document) SVG(pageNumber int) (string, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return "", ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return "", ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	var ctm fzMatrix
+	ctm = scale(float32(72.0/72), float32(72.0/72))
+	bounds = transformRect(bounds, ctm)
+
+	buf := fzNewBuffer(f.ctx, 1024)
+	defer fzDropBuffer(f.ctx, buf)
+
+	out := fzNewOutputWithBuffer(f.ctx, buf)
+	defer fzDropOutput(f.ctx, out)
+
+	device := newSvgDevice(f.ctx, out, bounds.X1-bounds.X0, bounds.Y1-bounds.Y0, fzSvgTextAsPath, 1)
+	fzEnableDeviceHints(f.ctx, device, fzNoCache)
+	defer fzDropDevice(f.ctx, device)
+
+	runPageContents(f.ctx, page, device, ctm)
+
+	fzCloseDevice(f.ctx, device)
+	fzCloseOutput(f.ctx, out)
+
+	ret := fzStringFromBuffer(f.ctx, buf)
+
+	return bytePtrToString(ret), nil
+}
+
+// ToC returns the table of contents (also known as outline).
+func (f *Document) ToC() ([]Outline, error) {
+	data := make([]Outline, 0)
+
+	outline := fzLoadOutline(f.ctx, f.doc)
+	if outline == nil {
+		return nil, ErrLoadOutline
+	}
+
+	defer fzDropOutline(f.ctx, outline)
+
+	var walk func(outline *fzOutline, level int)
+
+	walk = func(outline *fzOutline, level int) {
+		for outline != nil {
+			res := Outline{}
+			res.Level = level
+			res.Title = bytePtrToString((*uint8)(unsafe.Pointer(outline.Title)))
+			res.URI = bytePtrToString((*uint8)(unsafe.Pointer(outline.Uri)))
+			res.Page = int(outline.Page.Page)
+			res.Top = float64(outline.Y)
+			data = append(data, res)
+
+			if outline.Down != nil {
+				walk(outline.Down, level+1)
+			}
+			outline = outline.Next
+		}
+	}
+
+	walk(outline, 1)
+
+	return data, nil
+}
+
+// Metadata returns the map with standard metadata.
+func (f *Document) Metadata() map[string]string {
+	data := make(map[string]string)
+
+	lookup := func(key string) string {
+		buf := make([]byte, 256)
+		fzLookupMetadata(f.ctx, f.doc, key, unsafe.SliceData(buf), len(buf))
+
+		return string(buf)
+	}
+
+	data["format"] = lookup("format")
+	data["encryption"] = lookup("encryption")
+	data["title"] = lookup("info:Title")
+	data["author"] = lookup("info:Author")
+	data["subject"] = lookup("info:Subject")
+	data["keywords"] = lookup("info:Keywords")
+	data["creator"] = lookup("info:Creator")
+	data["producer"] = lookup("info:Producer")
+	data["creationDate"] = lookup("info:CreationDate")
+	data["modDate"] = lookup("info:ModDate")
+
+	return data
+}
+
+// Bound gives the Bounds of a given Page in the document.
+func (f *Document) Bound(pageNumber int) (image.Rectangle, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return image.Rectangle{}, ErrPageMissing
+	}
+
+	page := fzLoadPage(f.ctx, f.doc, pageNumber)
+	if page == nil {
+		return image.Rectangle{}, ErrLoadPage
+	}
+
+	defer fzDropPage(f.ctx, page)
+
+	var bounds fzRect
+	bounds = boundPage(f.ctx, page)
+
+	return image.Rect(int(bounds.X0), int(bounds.Y0), int(bounds.X1), int(bounds.Y1)), nil
+}
+
+// Close closes the underlying fitz document.
+func (f *Document) Close() error {
+	if f.stream != nil {
+		fzDropStream(f.ctx, f.stream)
+	}
+
+	fzDropDocument(f.ctx, f.doc)
+	fzDropContext(f.ctx)
+
+	f.data = nil
+
+	return nil
+}
+
+var (
+	libmupdf uintptr
+
+	fzNewSvgDevice             func(ctx *fzContext, out *fzOutput, pageWidth, pageHeight float32, textFormat, reuseImages int) *fzDevice
+	fzNewContextImp            func(alloc *fzAllocContext, locks *fzLocksContext, maxStore uint64, version string) *fzContext
+	fzDropContext              func(ctx *fzContext)
+	fzOpenDocument             func(ctx *fzContext, filename string) *fzDocument
+	fzOpenDocumentWithStream   func(ctx *fzContext, magic string, stream *fzStream) *fzDocument
+	fzOpenMemory               func(ctx *fzContext, data *uint8, len uint64) *fzStream
+	fzDropStream               func(ctx *fzContext, stm *fzStream)
+	fzRegisterDocumentHandlers func(ctx *fzContext)
+	fzNeedsPassword            func(ctx *fzContext, doc *fzDocument) int
+	fzDropDocument             func(ctx *fzContext, doc *fzDocument)
+	fzCountPages               func(ctx *fzContext, doc *fzDocument) int
+	fzLoadPage                 func(ctx *fzContext, doc *fzDocument, number int) *fzPage
+	fzDropPage                 func(ctx *fzContext, page *fzPage)
+	fzNewPixmap                func(ctx *fzContext, colorspace *fzColorspace, w, h int, seps *fzSeparations, alpha int) *fzPixmap
+	fzDropPixmap               func(ctx *fzContext, pix *fzPixmap)
+	fzPixmapSamples            func(ctx *fzContext, pix *fzPixmap) *uint8
+	fzClearPixmapWithValue     func(ctx *fzContext, pix *fzPixmap, value int)
+	fzEnableDeviceHints        func(ctx *fzContext, dev *fzDevice, hints int)
+	fzDropDevice               func(ctx *fzContext, dev *fzDevice)
+	fzCloseDevice              func(ctx *fzContext, dev *fzDevice)
+	fzDeviceRgb                func(ctx *fzContext) *fzColorspace
+	fzNewBuffer                func(ctx *fzContext, size uint64) *fzBuffer
+	fzDropBuffer               func(ctx *fzContext, buf *fzBuffer)
+	fzBufferStorage            func(ctx *fzContext, buf *fzBuffer, data **uint8) uint64
+	fzStringFromBuffer         func(ctx *fzContext, buf *fzBuffer) *uint8
+	fzLoadLinks                func(ctx *fzContext, page *fzPage) *fzLink
+	fzDropLink                 func(ctx *fzContext, link *fzLink)
+	fzDropStextPage            func(ctx *fzContext, page *fzStextPage)
+	fzNewStextDevice           func(ctx *fzContext, page *fzStextPage, options *fzStextOptions) *fzDevice
+	fzNewBufferFromStextPage   func(ctx *fzContext, page *fzStextPage) *fzBuffer
+	fzLookupMetadata           func(ctx *fzContext, doc *fzDocument, key string, buf *uint8, size int) int
+	fzLoadOutline              func(ctx *fzContext, doc *fzDocument) *fzOutline
+	fzDropOutline              func(ctx *fzContext, outline *fzOutline)
+	fzNewOutputWithBuffer      func(ctx *fzContext, buf *fzBuffer) *fzOutput
+	fzDropOutput               func(ctx *fzContext, out *fzOutput)
+	fzCloseOutput              func(ctx *fzContext, out *fzOutput)
+	fzPrintStextPageAsHTML     func(ctx *fzContext, out *fzOutput, page *fzStextPage, id int)
+	fzPrintStextHeaderAsHTML   func(ctx *fzContext, out *fzOutput)
+	fzPrintStextTrailerAsHTML  func(ctx *fzContext, out *fzOutput)
+	fzSetWarningCallback       func(ctx *fzContext, cb uintptr, user *byte)
+
+	silentWarning uintptr
+)
+
+// silenceWarnings installs a no-op warning callback, suppressing MuPDF's stderr warnings.
+func silenceWarnings(ctx *fzContext) {
+	fzSetWarningCallback(ctx, silentWarning, nil)
+}
+
+func init() {
+	libmupdf = loadLibrary()
+
+	if os.Getenv("FZ_VERSION") != "" {
+		FzVersion = os.Getenv("FZ_VERSION")
+	}
+
+	registerStructFuncs(libmupdf)
+
+	purego.RegisterLibFunc(&fzSetWarningCallback, libmupdf, "fz_set_warning_callback")
+	silentWarning = purego.NewCallback(func(user *byte, message *byte) {})
+
+	purego.RegisterLibFunc(&fzNewSvgDevice, libmupdf, "fz_new_svg_device")
+	purego.RegisterLibFunc(&fzNewContextImp, libmupdf, "fz_new_context_imp")
+	purego.RegisterLibFunc(&fzDropContext, libmupdf, "fz_drop_context")
+	purego.RegisterLibFunc(&fzOpenDocument, libmupdf, "fz_open_document")
+	purego.RegisterLibFunc(&fzOpenDocumentWithStream, libmupdf, "fz_open_document_with_stream")
+	purego.RegisterLibFunc(&fzOpenMemory, libmupdf, "fz_open_memory")
+	purego.RegisterLibFunc(&fzDropStream, libmupdf, "fz_drop_stream")
+	purego.RegisterLibFunc(&fzRegisterDocumentHandlers, libmupdf, "fz_register_document_handlers")
+	purego.RegisterLibFunc(&fzNeedsPassword, libmupdf, "fz_needs_password")
+	purego.RegisterLibFunc(&fzDropDocument, libmupdf, "fz_drop_document")
+	purego.RegisterLibFunc(&fzCountPages, libmupdf, "fz_count_pages")
+	purego.RegisterLibFunc(&fzLoadPage, libmupdf, "fz_load_page")
+	purego.RegisterLibFunc(&fzDropPage, libmupdf, "fz_drop_page")
+	purego.RegisterLibFunc(&fzNewPixmap, libmupdf, "fz_new_pixmap")
+	purego.RegisterLibFunc(&fzDropPixmap, libmupdf, "fz_drop_pixmap")
+	purego.RegisterLibFunc(&fzPixmapSamples, libmupdf, "fz_pixmap_samples")
+	purego.RegisterLibFunc(&fzClearPixmapWithValue, libmupdf, "fz_clear_pixmap_with_value")
+	purego.RegisterLibFunc(&fzEnableDeviceHints, libmupdf, "fz_enable_device_hints")
+	purego.RegisterLibFunc(&fzDropDevice, libmupdf, "fz_drop_device")
+	purego.RegisterLibFunc(&fzCloseDevice, libmupdf, "fz_close_device")
+	purego.RegisterLibFunc(&fzDeviceRgb, libmupdf, "fz_device_rgb")
+	purego.RegisterLibFunc(&fzNewBuffer, libmupdf, "fz_new_buffer")
+	purego.RegisterLibFunc(&fzDropBuffer, libmupdf, "fz_drop_buffer")
+	purego.RegisterLibFunc(&fzBufferStorage, libmupdf, "fz_buffer_storage")
+	purego.RegisterLibFunc(&fzStringFromBuffer, libmupdf, "fz_string_from_buffer")
+	purego.RegisterLibFunc(&fzLoadLinks, libmupdf, "fz_load_links")
+	purego.RegisterLibFunc(&fzDropLink, libmupdf, "fz_drop_link")
+	purego.RegisterLibFunc(&fzDropStextPage, libmupdf, "fz_drop_stext_page")
+	purego.RegisterLibFunc(&fzNewStextDevice, libmupdf, "fz_new_stext_device")
+	purego.RegisterLibFunc(&fzNewBufferFromStextPage, libmupdf, "fz_new_buffer_from_stext_page")
+	purego.RegisterLibFunc(&fzLookupMetadata, libmupdf, "fz_lookup_metadata")
+	purego.RegisterLibFunc(&fzLoadOutline, libmupdf, "fz_load_outline")
+	purego.RegisterLibFunc(&fzDropOutline, libmupdf, "fz_drop_outline")
+	purego.RegisterLibFunc(&fzNewOutputWithBuffer, libmupdf, "fz_new_output_with_buffer")
+	purego.RegisterLibFunc(&fzDropOutput, libmupdf, "fz_drop_output")
+	purego.RegisterLibFunc(&fzCloseOutput, libmupdf, "fz_close_output")
+	purego.RegisterLibFunc(&fzPrintStextPageAsHTML, libmupdf, "fz_print_stext_page_as_html")
+	purego.RegisterLibFunc(&fzPrintStextHeaderAsHTML, libmupdf, "fz_print_stext_header_as_html")
+	purego.RegisterLibFunc(&fzPrintStextTrailerAsHTML, libmupdf, "fz_print_stext_trailer_as_html")
+
+	ver := version()
+	if ver != "" {
+		FzVersion = ver
+	}
+}
+
+// libVersionRe matches the library version in fz_new_context_imp's mismatch message.
+var libVersionRe = regexp.MustCompile(`library \(([0-9]+\.[0-9]+\.[0-9]+)\)`)
+
+// version finds the libmupdf build version fz_new_context_imp needs: FzVersion, then the mismatch message, then a scan.
+func version() string {
+	var ok bool
+	out := captureStderr(func() { ok = probeVersion(FzVersion) })
+	if ok {
+		return FzVersion
+	}
+
+	if m := libVersionRe.FindStringSubmatch(out); m != nil && m[1] != FzVersion {
+		captureStderr(func() { ok = probeVersion(m[1]) })
+		if ok {
+			return m[1]
+		}
+	}
+
+	var found string
+	captureStderr(func() { found = scanVersion() })
+
+	return found
+}
+
+// probeVersion reports whether ver is the libmupdf build version.
+func probeVersion(ver string) bool {
+	ctx := fzNewContextImp(nil, nil, uint64(MaxStore), ver)
+	if ctx == nil {
+		return false
+	}
+
+	fzDropContext(ctx)
+
+	return true
+}
+
+// scanVersion brute-forces minor/patch combinations around FzVersion as a fallback.
+func scanVersion() string {
+	s := strings.Split(FzVersion, ".")
+	if len(s) != 3 {
+		return ""
+	}
+
+	minor, err := strconv.Atoi(s[1])
+	if err != nil {
+		return ""
+	}
+
+	for m := minor + 2; m >= 0; m-- {
+		for p := 12; p >= 0; p-- {
+			ver := s[0] + "." + strconv.Itoa(m) + "." + strconv.Itoa(p)
+			if ver == FzVersion {
+				continue
+			}
+
+			if probeVersion(ver) {
+				return ver
+			}
+		}
+	}
+
+	return ""
+}
+
+// scale ports fz_scale.
+func scale(sx, sy float32) fzMatrix {
+	return fzMatrix{A: sx, D: sy}
+}
+
+// transformRect ports fz_transform_rect.
+func transformRect(r fzRect, m fzMatrix) fzRect {
+	if isInfiniteRect(r) {
+		return r
+	}
+
+	const eps = 1.19209290e-07 // FLT_EPSILON
+
+	if absF32(m.B) < eps && absF32(m.C) < eps {
+		if m.A < 0 {
+			r.X0, r.X1 = r.X1, r.X0
+		}
+		if m.D < 0 {
+			r.Y0, r.Y1 = r.Y1, r.Y0
+		}
+		r.X0, r.Y0 = transformPointXY(r.X0, r.Y0, m)
+		r.X1, r.Y1 = transformPointXY(r.X1, r.Y1, m)
+
+		return r
+	} else if absF32(m.A) < eps && absF32(m.D) < eps {
+		if m.B < 0 {
+			r.X0, r.X1 = r.X1, r.X0
+		}
+		if m.C < 0 {
+			r.Y0, r.Y1 = r.Y1, r.Y0
+		}
+		r.X0, r.Y0 = transformPointXY(r.X0, r.Y0, m)
+		r.X1, r.Y1 = transformPointXY(r.X1, r.Y1, m)
+
+		return r
+	}
+
+	invalid := r.X0 > r.X1 || r.Y0 > r.Y1
+	sx, sy := transformPointXY(r.X0, r.Y0, m)
+	tx, ty := transformPointXY(r.X0, r.Y1, m)
+	ux, uy := transformPointXY(r.X1, r.Y1, m)
+	vx, vy := transformPointXY(r.X1, r.Y0, m)
+	r.X0, r.X1 = min(sx, tx, ux, vx), max(sx, tx, ux, vx)
+	r.Y0, r.Y1 = min(sy, ty, uy, vy), max(sy, ty, uy, vy)
+
+	if invalid {
+		r.X0, r.X1 = r.X1, r.X0
+		r.Y0, r.Y1 = r.Y1, r.Y0
+	}
+
+	return r
+}
+
+// roundRect ports fz_round_rect.
+func roundRect(r fzRect) fzIRect {
+	const minSafe, maxSafe = -16777216, 16777216
+
+	clamp := func(f float64) int32 {
+		switch {
+		case f < minSafe:
+			return minSafe
+		case f > maxSafe:
+			return maxSafe
+		default:
+			return int32(f)
+		}
+	}
+
+	return fzIRect{
+		X0: clamp(math.Floor(float64(r.X0) + 0.001)),
+		Y0: clamp(math.Floor(float64(r.Y0) + 0.001)),
+		X1: clamp(math.Ceil(float64(r.X1) - 0.001)),
+		Y1: clamp(math.Ceil(float64(r.Y1) - 0.001)),
+	}
+}
+
+func transformPointXY(x, y float32, m fzMatrix) (float32, float32) {
+	return x*m.A + y*m.C + m.E, x*m.B + y*m.D + m.F
+}
+
+func isInfiniteRect(r fzRect) bool {
+	const minInf, maxInf = -2147483648, 0x7fffff80
+
+	return r.X0 == minInf && r.X1 == maxInf && r.Y0 == minInf && r.Y1 == maxInf
+}
+
+func absF32(x float32) float32 {
+	if x < 0 {
+		return -x
+	}
+
+	return x
+}
+
+func newSvgDevice(ctx *fzContext, out *fzOutput, pageWidth, pageHeight float32, textFormat, reuseImages int) *fzDevice {
+	return fzNewSvgDevice(ctx, out, pageWidth, pageHeight, textFormat, reuseImages)
+}
+
+const (
+	fzNoCache             = 2
+	fzStextPreserveImages = 4
+	fzSvgTextAsPath       = 0
+	fzStextBlockText      = 0
+	fzStextBlockImage     = 1
+)
+
+var fzIdentity = fzMatrix{A: 1, B: 0, C: 0, D: 1, E: 0, F: 0}
+
+type fzContext struct {
+	User          *byte
+	Alloc         fzAllocContext
+	Locks         fzLocksContext
+	Error         fzErrorContext
+	Warn          fzWarnContext
+	Aa            fzAaContext
+	Seed48        [7]uint16
+	IccEnabled    int32
+	ThrowOnRepair int32
+	Handler       *fzDocumentHandlerContext
+	Archive       *fzArchiveHandlerContext
+	Style         *fzStyleContext
+	Tuning        *fzTuningContext
+	StdDbg        *fzOutput
+	Font          *fzFontContext
+	Colorspace    *fzColorspaceContext
+	Store         *fzStore
+	GlyphCache    *fzGlyphCache
+}
+
+type fzDocument struct {
+	Refs                 int32
+	DropDocument         *[0]byte
+	NeedsPassword        *[0]byte
+	AuthenticatePassword *[0]byte
+	HasPermission        *[0]byte
+	LoadOutline          *[0]byte
+	OutlineIterator      *[0]byte
+	Layout               *[0]byte
+	MakeBookmark         *[0]byte
+	LookupBookmark       *[0]byte
+	ResolveLinkDest      *[0]byte
+	FormatLinkUri        *[0]byte
+	CountChapters        *[0]byte
+	CountPages           *[0]byte
+	LoadPage             *[0]byte
+	PageLabel            *[0]byte
+	LookupMetadata       *[0]byte
+	SetMetadata          *[0]byte
+	GetOutputIntent      *[0]byte
+	OutputAccelerator    *[0]byte
+	RunStructure         *[0]byte
+	AsPdf                *[0]byte
+	DidLayout            int32
+	IsReflowable         int32
+	Open                 *fzPage
+}
+
+type fzOutline struct {
+	Refs  int32
+	Title *int8
+	Uri   *int8
+	Page  fzLocation
+	X     float32
+	Y     float32
+	Next  *fzOutline
+	Down  *fzOutline
+	Open  int32
+	_     [4]byte
+}
+
+type fzPage struct {
+	Refs               int32
+	Doc                *fzDocument
+	Chapter            int32
+	Number             int32
+	Incomplete         int32
+	DropPage           *[0]byte
+	BoundPage          *[0]byte
+	RunPageContents    *[0]byte
+	RunPageAnnots      *[0]byte
+	RunPageWidgets     *[0]byte
+	LoadLinks          *[0]byte
+	PagePresentation   *[0]byte
+	ControlSeparation  *[0]byte
+	SeparationDisabled *[0]byte
+	Separations        *[0]byte
+	Overprint          *[0]byte
+	CreateLink         *[0]byte
+	DeleteLink         *[0]byte
+	Prev               **fzPage
+	Next               *fzPage
+}
+
+type fzOutput struct {
+	State    *byte
+	Write    *[0]byte
+	Seek     *[0]byte
+	Tell     *[0]byte
+	Close    *[0]byte
+	Drop     *[0]byte
+	Reset    *[0]byte
+	Stream   *[0]byte
+	Truncate *[0]byte
+	Closed   int32
+	Bp       *int8
+	Wp       *int8
+	Ep       *int8
+	Buffered int32
+	Bits     int32
+}
+
+type fzLocation struct {
+	Chapter int32
+	Page    int32
+}
+
+type fzStream struct {
+	Refs        int32
+	Error       int32
+	Eof         int32
+	Progressive int32
+	Pos         int64
+	Avail       int32
+	Bits        int32
+	Rp          *uint8
+	Wp          *uint8
+	State       *byte
+	Next        *[0]byte
+	Drop        *[0]byte
+	Seek        *[0]byte
+}
+
+type fzRect struct {
+	X0 float32
+	Y0 float32
+	X1 float32
+	Y1 float32
+}
+
+type fzIRect struct {
+	X0 int32
+	Y0 int32
+	X1 int32
+	Y1 int32
+}
+
+type fzMatrix struct {
+	A float32
+	B float32
+	C float32
+	D float32
+	E float32
+	F float32
+}
+
+type fzCookie struct {
+	Abort      int32
+	Progress   int32
+	Max        uint64
+	Errors     int32
+	Incomplete int32
+}
+
+type fzDevice struct {
+	Refs                  int32
+	Hints                 int32
+	Flags                 int32
+	CloseDevice           *[0]byte
+	DropDevice            *[0]byte
+	FillPath              *[0]byte
+	StrokePath            *[0]byte
+	ClipPath              *[0]byte
+	ClipStrokePath        *[0]byte
+	FillText              *[0]byte
+	StrokeText            *[0]byte
+	ClipText              *[0]byte
+	ClipStrokeText        *[0]byte
+	IgnoreText            *[0]byte
+	FillShade             *[0]byte
+	FillImage             *[0]byte
+	FillImageMask         *[0]byte
+	ClipImageMask         *[0]byte
+	PopClip               *[0]byte
+	BeginMask             *[0]byte
+	EndMask               *[0]byte
+	BeginGroup            *[0]byte
+	EndGroup              *[0]byte
+	BeginTile             *[0]byte
+	EndTile               *[0]byte
+	RenderFlags           *[0]byte
+	SetDefaultColorspaces *[0]byte
+	BeginLayer            *[0]byte
+	EndLayer              *[0]byte
+	BeginStructure        *[0]byte
+	EndStructure          *[0]byte
+	BeginMetatext         *[0]byte
+	EndMetatext           *[0]byte
+	D1Rect                fzRect
+	ContainerLen          int32
+	ContainerCap          int32
+	Container             *fzDeviceContainerStack
+}
+
+type fzColorspace struct {
+	Storable fzKeyStorable
+	Type     uint32
+	Flags    int32
+	N        int32
+	Name     *int8
+	U        [288]byte
+}
+
+type fzStorable struct {
+	Refs      int32
+	Drop      *[0]byte
+	Droppable *[0]byte
+}
+
+type fzKeyStorable struct {
+	Storable fzStorable
+	KeyRefs  int16
+	_        [6]byte
+}
+
+type fzPixmap struct {
+	Storable   fzStorable
+	X          int32
+	Y          int32
+	W          int32
+	H          int32
+	N          uint8
+	S          uint8
+	Alpha      uint8
+	Flags      uint8
+	Stride     int64
+	Seps       *fzSeparations
+	Xres       int32
+	Yres       int32
+	Colorspace *fzColorspace
+	Samples    *uint8
+	Underlying *fzPixmap
+}
+
+type fzColorParams struct {
+	Ri  uint8
+	Bp  uint8
+	Op  uint8
+	Opm uint8
+}
+
+type fzBuffer struct {
+	Refs   int32
+	Data   *uint8
+	Cap    uint64
+	Len    uint64
+	Bits   int32
+	Shared int32
+}
+
+type fzLink struct {
+	Refs   int32
+	Next   *fzLink
+	Rect   fzRect
+	Uri    *int8
+	RectFn *[0]byte
+	UriFn  *[0]byte
+	Drop   *[0]byte
+}
+
+type fzStextPage struct {
+	Refs       int32
+	_          [4]byte
+	Pool       *fzPool
+	Mediabox   fzRect
+	FirstBlock *fzStextBlock
+	LastBlock  *fzStextBlock
+}
+
+type fzStextOptions struct {
+	Flags int32
+	Scale float32
+}
+
+type fzStextBlock struct {
+	Type int32
+	Id   int32
+	Bbox fzRect
+	U    [32]byte
+	Prev *fzStextBlock
+	Next *fzStextBlock
+}
+
+type fzImage struct {
+	_ [32]byte // fz_key_storable
+	W int32
+	H int32
+}
+
+type fzDeviceContainerStack struct {
+	Scissor fzRect
+	Type    int32
+	User    int32
+}
+
+type fzAllocContext struct {
+	User    *byte
+	Malloc  *[0]byte
+	Realloc *[0]byte
+	Free    *[0]byte
+}
+
+type fzLocksContext struct {
+	User   *byte
+	Lock   *[0]byte
+	Unlock *[0]byte
+}
+
+type fzErrorContext struct {
+	Top       *fzErrorStackSlot
+	Stack     [256]fzErrorStackSlot
+	Padding   fzErrorStackSlot
+	StackBase *fzErrorStackSlot
+	ErrCode   int32
+	ErrNum    int32
+	PrintUser *byte
+	Print     *[0]byte
+	Message   [256]int8
+}
+
+type fzWarnContext struct {
+	User    *byte
+	Print   *[0]byte
+	Count   int32
+	Message [256]int8
+	_       [4]byte
+}
+
+type fzAaContext struct {
+	Hscale       int32
+	Vscale       int32
+	Scale        int32
+	Bits         int32
+	TextBits     int32
+	MinLineWidth float32
+}
+
+type fzErrorStackSlot struct {
+	Buffer  [1]int32
+	State   int32
+	Code    int32
+	Padding [24]int8
+}
+
+type fzFontContext struct{}
+type fzColorspaceContext struct{}
+type fzTuningContext struct{}
+type fzStyleContext struct{}
+type fzDocumentHandlerContext struct{}
+type fzArchiveHandlerContext struct{}
+type fzStore struct{}
+type fzGlyphCache struct{}
+type fzSeparations struct{}
+type fzPool struct{}

@@ -1,7 +1,9 @@
 // view.go is the root view (module B). It composes the whole window from
 // the components, in the order the map in components.go prescribes:
-// shortcuts first so they are window-scoped, then the chrome, then the
-// content row, and the palette overlay last so it draws above everything.
+// shortcuts first so they are window-scoped, then the title bar (the
+// integrated one — icon, inline menus, drag region — that replaces the
+// native title bar), then the chrome, then the content row, and the
+// palette overlay last so it draws above everything.
 package app
 
 import "github.com/egoist/mygo/ui"
@@ -15,10 +17,12 @@ func (s *AppState) View(c *ui.Context) {
 	// content row grows into the rest. Dividers separate the bands and the
 	// sidebar from the viewer so the chrome doesn't read as one surface.
 	ui.Column(c).Fill().Children(func() {
-		tabBar(c, s)  // C: browser-style tab strip
-		ui.Divider(c) // ─ under the tab strip
-		toolbar(c, s) // C: back/forward, reload, search, zoom
-		ui.Divider(c) // ─ under the toolbar
+		titleBarView(c, s) // title bar: app icon, File/View/Go, drag region
+		ui.Divider(c)      // ─ under the title bar
+		tabBar(c, s)       // C: browser-style tab strip
+		ui.Divider(c)      // ─ under the tab strip
+		toolbar(c, s)      // C: back/forward, reload, search, zoom
+		ui.Divider(c)      // ─ under the toolbar
 
 		// Content: sidebar (C) beside the page area (B), which fills the
 		// rest, and — when toggled — the search results panel (D) on the
