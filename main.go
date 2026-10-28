@@ -11,6 +11,7 @@
 package main
 
 import (
+	_ "embed"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,6 +20,12 @@ import (
 	"github.com/egoist/mygo/ui"
 	"gopdf/internal/app"
 )
+
+// iconPNG is the app icon the title bar shows, embedded so it loads from
+// any working directory (same source file mygo embeds as the exe icon).
+//
+//go:embed resources/icon.png
+var iconPNG []byte
 
 func main() {
 	state := app.NewAppState()
@@ -37,13 +44,12 @@ func main() {
 	app.ApplyThemeAtStartup()
 
 	// The title bar's app icon (internal/app/titlebar.go), decoded before
-	// Run: DecodeBitmap needs no running app. A missing or invalid file —
-	// the icon is looked up next to the exe, as in dev — just leaves the
-	// bar without the icon.
-	if b, err := os.ReadFile("resources/icon.png"); err == nil {
-		if bm, err := ui.DecodeBitmap(b); err == nil {
-			app.SetAppIcon(bm)
-		}
+	// Run: DecodeBitmap needs no running app. The PNG is EMBEDDED in the
+	// binary — a path relative to the working directory would miss when
+	// the OS launches the exe from elsewhere (a file-association
+	// double-click starts it with the PDF's folder as CWD).
+	if bm, err := ui.DecodeBitmap(iconPNG); err == nil {
+		app.SetAppIcon(bm)
 	}
 
 	// Single instance: in a later launch this returns false after handing
