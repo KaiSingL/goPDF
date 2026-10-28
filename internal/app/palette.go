@@ -195,7 +195,12 @@ func rebuildPalette(s *AppState) {
 			cmds = append(cmds, paletteItem{section: "Commands", label: label, run: run})
 		}
 	}
-	cmd("Toggle Theme", toggleTheme)
+	// The theme modes as explicit commands (the status bar button keeps
+	// the cycle): each applies through SetThemeMode, like the View menu's
+	// Theme submenu.
+	cmd("Theme: Follow System", func() { SetThemeMode("auto") })
+	cmd("Theme: Dark", func() { SetThemeMode("dark") })
+	cmd("Theme: Light", func() { SetThemeMode("light") })
 	cmd("Toggle Sidebar", func() { s.ToggleSidebar() })
 	cmd("Zoom In", func() {
 		if t := s.Active(); t != nil {

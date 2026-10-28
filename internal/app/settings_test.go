@@ -122,6 +122,40 @@ func TestThemeCycle(t *testing.T) {
 	}
 }
 
+// TestSetThemeMode checks SetThemeMode: an explicit mode is normalized
+// (anything unknown falls back to auto, exactly like the saved settings),
+// mapped to mygo's source — asserted through themeSource, as in
+// TestThemeCycle, since a headless test has no running app to apply it
+// on — and FollowSystemTheme kept in step (⇔ auto).
+func TestSetThemeMode(t *testing.T) {
+	old := ThemeMode
+	t.Cleanup(func() { ThemeMode = old })
+
+	s := NewAppState()
+	SetState(s)
+	t.Cleanup(func() { current = nil })
+
+	for _, tc := range []struct {
+		in, want     string
+		source       mygo.ThemeSource
+		followSystem bool
+	}{
+		{"dark", "dark", mygo.ThemeDark, false},
+		{"light", "light", mygo.ThemeLight, false},
+		{"auto", "auto", mygo.ThemeSystem, true},
+		{"night", "auto", mygo.ThemeSystem, true}, // unknown → auto
+		{"DARK", "auto", mygo.ThemeSystem, true},  // normalization is exact
+	} {
+		SetThemeMode(tc.in)
+		if ThemeMode != tc.want || themeSource() != tc.source ||
+			s.Settings.FollowSystemTheme != tc.followSystem {
+			t.Errorf("SetThemeMode(%q): mode %q source %v follow %v, want %q %v %v",
+				tc.in, ThemeMode, themeSource(), s.Settings.FollowSystemTheme,
+				tc.want, tc.source, tc.followSystem)
+		}
+	}
+}
+
 // TestSaveCreatesDir checks SaveSettings against a missing directory.
 func TestSaveCreatesDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "deeper")

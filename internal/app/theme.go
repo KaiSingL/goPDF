@@ -61,6 +61,16 @@ func ApplyThemeAtStartup() {
 	setThemeSource(themeSource())
 }
 
+// SetThemeMode switches to an explicit mode — "auto", "dark" or "light"
+// (anything else normalizes to auto, exactly like the saved settings —
+// and applies it at once. The View menu's Theme submenu and the palette
+// call it with a fixed choice; ToggleTheme stays the status bar button's
+// cycling entry point.
+func SetThemeMode(mode string) {
+	ThemeMode = NormalizeThemeMode(mode)
+	ApplyTheme()
+}
+
 // ToggleTheme cycles auto → dark → light → auto and applies the new mode
 // at once. It replaces the stub of components.go.
 func ToggleTheme() {

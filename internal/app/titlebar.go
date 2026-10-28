@@ -132,8 +132,10 @@ func titleFileMenu(c *ui.Context, s *AppState) {
 
 // titleViewMenu is the View menu: zoom and fit (the zoom actions are the
 // shortcut helpers of shortcuts.go — the same guarded closures), rotate,
-// the sidebar, and dark mode. Zoom and fit need a document; without one
-// the guard is a no-op, as it was for the native menu.
+// the sidebar, and the Theme submenu (one checked item per mode, the
+// check marking the current ThemeMode, a choice applying it through
+// SetThemeMode). Zoom and fit need a document; without one the guard is
+// a no-op, as it was for the native menu.
 func titleViewMenu(c *ui.Context, s *AppState) {
 	titleMenuButton(c, "View", func(m *ui.Menu) {
 		menuItem(m, "Zoom In", zoomIn(s))
@@ -145,7 +147,16 @@ func titleViewMenu(c *ui.Context, s *AppState) {
 		menuItem(m, "Rotate Clockwise", withActiveTab(s, func(t *Tab) { t.RotateBy() }))
 		m.Separator()
 		menuItem(m, "Toggle Sidebar", func() { s.ToggleSidebar() })
-		menuItem(m, "Dark Mode", ToggleTheme)
+		m.Submenu("Theme", func(m *ui.Menu) {
+			themeItem := func(label, mode string) {
+				if m.Item(label).Checked(ThemeMode == mode).Chosen() {
+					SetThemeMode(mode)
+				}
+			}
+			themeItem("Follow System", "auto")
+			themeItem("Dark", "dark")
+			themeItem("Light", "light")
+		})
 	})
 }
 

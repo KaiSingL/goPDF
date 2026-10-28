@@ -117,7 +117,7 @@ func TestTitleBarViewMenu(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"Zoom In", "Zoom Out", "Reset Zoom", "Fit Width",
-		"Fit Page", "Rotate Clockwise", "Toggle Sidebar", "Dark Mode"} {
+		"Fit Page", "Rotate Clockwise", "Toggle Sidebar", "Theme"} {
 		if !slices.Contains(tt.Menu(), want) {
 			t.Errorf("View menu missing %q; items %q", want, tt.Menu())
 		}

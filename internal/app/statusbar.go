@@ -8,8 +8,10 @@
 //     shows as the placeholder, so typing replaces it and submitting (or
 //     invalid input) resets the field to the committed page. Enter is the
 //     input's Submitted.
-//   - The dark-mode button shows a moon in the light theme and a sun in
-//     the dark one (c.Theme().Dark), and calls toggleTheme (Agent D).
+//   - The theme button shows the current MODE's icon — monitor for auto
+//     (follow system), moon for dark, sun for light — under a stable
+//     accessible label, with a tooltip naming the mode and the next one;
+//     a click cycles via toggleTheme (Agent D).
 package app
 
 import (
@@ -64,15 +66,14 @@ func statusBar(c *ui.Context, s *AppState) {
 		ui.Spacer(c)
 		// Slim vertical padding: the button's default (Space(1.5)) plus its
 		// border is taller than the bar's content box, which would sit it
-		// flush against the bar's edges.
-		theme := ui.Button(c, "").Label("Toggle dark mode").Tooltip("Toggle dark mode").
+		// flush against the bar's edges. The icon follows the MODE, not
+		// the resolved theme, so the button reads as "which mode am I in";
+		// the label stays stable for accessibility and the tooltip names
+		// the mode and what a click switches to.
+		theme := ui.Button(c, "").Label("Toggle dark mode").Tooltip(themeButtonTooltip()).
 			PaddingY(th.Space(0.5))
 		theme.Children(func() {
-			icon := chromeIcons.moon
-			if th.Dark {
-				icon = chromeIcons.sun
-			}
-			ui.Icon(c, icon).FontSize(14)
+			ui.Icon(c, themeModeIcon()).FontSize(14)
 		})
 		theme.OnClick(toggleTheme)
 		ui.Text(c, "Saved").FontSize(12).TextColor(th.TextMuted) // settings autosave (spec §4)
@@ -97,6 +98,35 @@ func pageInput(c *ui.Context, t *Tab) {
 		if err == nil {
 			t.Navigate(n-1, 0)
 		}
+	}
+}
+
+// themeModeIcon returns the current MODE's icon (not the resolved
+// theme's, as the old moon-in-light/sun-in-dark pair did): monitor for
+// auto — follow system —, moon for dark, sun for light. theme_ui_test.go
+// asserts the mapping, since the Tester can neither read icons nor
+// tooltips.
+func themeModeIcon() *ui.SVG {
+	switch ThemeMode {
+	case "dark":
+		return chromeIcons.moon
+	case "light":
+		return chromeIcons.sun
+	default:
+		return chromeIcons.monitor
+	}
+}
+
+// themeButtonTooltip names the current mode and what a click switches to
+// (the toggleTheme cycle auto → dark → light → auto).
+func themeButtonTooltip() string {
+	switch ThemeMode {
+	case "dark":
+		return "Theme: dark — click for light"
+	case "light":
+		return "Theme: light — click for system"
+	default:
+		return "Theme: follow system — click for dark"
 	}
 }
 
