@@ -165,14 +165,16 @@ func searchMeta(c *ui.Context, s *AppState, t *Tab) {
 		}
 		status.TextColor(th.TextMuted).FontSize(13).Grow(1)
 
-		prev := ui.Button(c, "‹").Label("Previous hit").Tooltip("Previous hit (Shift+Enter)").
+		prev := ui.Button(c, "").Label("Previous hit").Tooltip("Previous hit (Shift+Enter)").
 			Disabled(len(t.Search.Hits) == 0)
+		prev.Children(func() { ui.Icon(c, chromeIcons.chevUp).FontSize(15) })
 		prev.OnClick(func() { s.StepSearch(t, -1) })
 		if t.Search.Current >= 0 {
 			ui.Textf(c, "%d of %d", t.Search.Current+1, len(t.Search.Hits)).FontSize(13)
 		}
-		next := ui.Button(c, "›").Label("Next hit").Tooltip("Next hit (Enter)").
+		next := ui.Button(c, "").Label("Next hit").Tooltip("Next hit (Enter)").
 			Disabled(len(t.Search.Hits) == 0)
+		next.Children(func() { ui.Icon(c, chromeIcons.chevDown).FontSize(15) })
 		next.OnClick(func() { s.StepSearch(t, +1) })
 	})
 }
@@ -214,8 +216,9 @@ func searchResults(c *ui.Context, t *Tab) {
 }
 
 // searchHitRow is one hit: its page number (accent on the current hit)
-// beside a snippet of the page text around the match. Clicking selects
-// the hit and navigates to its page.
+// beside a snippet of the page text around the match, the match itself
+// emphasized in the accent color. Clicking selects the hit and navigates
+// to its page.
 func searchHitRow(c *ui.Context, t *Tab, i int) {
 	th := c.Theme()
 	hit := t.Search.Hits[i]
@@ -234,8 +237,8 @@ func searchHitRow(c *ui.Context, t *Tab, i int) {
 		} else {
 			page.TextColor(th.TextMuted)
 		}
-		if sn := hitSnippet(t, hit); sn != "" {
-			ui.Text(c, sn).Grow(1).SingleLine()
+		if sn, ok := hitSnippet(t, hit); ok {
+			snippetText(c, th, sn).Grow(1).SingleLine()
 		}
 	})
 	row.OnClick(func() {
@@ -244,49 +247,95 @@ func searchHitRow(c *ui.Context, t *Tab, i int) {
 	})
 }
 
-// hitSnippet builds a hit row's snippet from the tab's built text index;
-// with no index yet (still building) there is no snippet.
-func hitSnippet(t *Tab, h pdf.SearchHit) string {
-	ix := t.Index()
-	if ix == nil {
-		return ""
+// snippetText lays a snippet out as one rich text — context, then the
+// match in the accent color and bold, then context — so a row reads as
+// text around its match at a glance.
+func snippetText(c *ui.Context, th *ui.Theme, sn snip) ui.Element {
+	var spans []ui.Span
+	if sn.before != "" {
+		spans = append(spans, ui.Span{Text: sn.before})
 	}
-	return snippet(ix.PageText(h.Page), t.Search.Query)
+	if sn.match != "" {
+		spans = append(spans, ui.Span{Text: sn.match, Color: th.Accent, Weight: 700})
+	}
+	if sn.after != "" {
+		spans = append(spans, ui.Span{Text: sn.after})
+	}
+	return ui.RichText(c, spans...)
 }
 
-// snippetMax is the snippet length in runes.
-const snippetMax = 70
+// hitSnippet builds a hit row's snippet from the tab's built text index;
+// with no index yet (still building) there is no snippet. The page's
+// plain text and its spans come from separate extractions, so when the
+// plain text has lost a match the search itself found (extraction
+// quirks), the snippet locates within the hit's covering spans' text —
+// where the search found it — instead.
+func hitSnippet(t *Tab, h pdf.SearchHit) (snip, bool) {
+	ix := t.Index()
+	if ix == nil {
+		return snip{}, false
+	}
+	if sn, ok := snippet(ix.PageText(h.Page), t.Search.Query); ok {
+		return sn, true
+	}
+	txts := make([]string, 0, len(h.Spans))
+	for _, sp := range h.Spans {
+		txts = append(txts, sp.Text)
+	}
+	return snippet(strings.Join(txts, " "), t.Search.Query)
+}
 
-// snippet returns up to snippetMax runes of text centered on the query's
-// first case-insensitive occurrence, marking cut sides with "…". Without
-// an occurrence (or with an empty query) it centers on the text start;
-// empty text yields "".
-func snippet(text, query string) string {
+// Snippet bounds, in runes, the context kept around a match: a little
+// more after than before, as the eye reads toward the match.
+const (
+	snippetBefore = 25
+	snippetAfter  = 35
+)
+
+// snip is a snippet split around the match for the row to emphasize the
+// match against its context. "…" is folded onto a side whose text was
+// cut short, and onto no other.
+type snip struct {
+	before, match, after string
+}
+
+// snippet locates the query's first case-insensitive occurrence in text
+// and returns up to snippetBefore runes before and snippetAfter runes
+// after it, reporting found=false without one (or with an empty text or
+// query). The match is kept whole; a cut side carries "…", so the
+// snippet is never just the bare match when any context exists.
+func snippet(text, query string) (snip, bool) {
 	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
+	if text == "" || query == "" {
+		return snip{}, false
 	}
 	rs := []rune(text)
 	low := []rune(strings.ToLower(text))
 	q := []rune(strings.ToLower(query))
 
-	at := 0 // rune index of the first match, 0 without one
-	if i := indexRunes(low, q); i >= 0 {
-		at = i
+	at := indexRunes(low, q) // first match, -1 without one
+	if at < 0 {
+		return snip{}, false
 	}
-	start := at - (snippetMax-len(q))/2
-	start = max(0, min(start, len(rs)-snippetMax))
-	end := min(len(rs), start+snippetMax)
+	start := max(0, at-snippetBefore)
+	end := min(len(rs), at+len(q)+snippetAfter)
 
-	var b strings.Builder
-	if start > 0 {
-		b.WriteString("…")
+	var sn snip
+	sn.match = string(rs[at : at+len(q)])
+	if start < at { // context before the match
+		if start > 0 {
+			sn.before = "…" + string(rs[start:at])
+		} else {
+			sn.before = string(rs[start:at])
+		}
 	}
-	b.WriteString(string(rs[start:end]))
-	if end < len(rs) {
-		b.WriteString("…")
+	if endAfter := at + len(q); endAfter < end { // context after it
+		sn.after = string(rs[endAfter:end])
+		if end < len(rs) {
+			sn.after += "…"
+		}
 	}
-	return b.String()
+	return sn, true
 }
 
 // indexRunes returns the rune index of the first occurrence of needle in

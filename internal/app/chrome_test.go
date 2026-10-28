@@ -374,8 +374,18 @@ func TestSearchPanelFlow(t *testing.T) {
 	}
 	tt.Type("page-")
 	tt.Key(0, ui.KeyEnter)
-	if tab.Search.Query != "page-" || len(tab.Search.Hits) != 3 {
-		t.Fatalf("re-search failed: query %q hits %d", tab.Search.Query, len(tab.Search.Hits))
+	// The re-searched hits land through the frame-drained queue exactly
+	// as the first search's did: pump until Running flips false. (The
+	// missing pump here was a latent flake: the assertion raced the doc
+	// worker's quads.)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && tab.Search.Running {
+		tt.Frame()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if tab.Search.Query != "page-" || tab.Search.Running || len(tab.Search.Hits) != 3 {
+		t.Fatalf("re-search failed: query %q running %v hits %d",
+			tab.Search.Query, tab.Search.Running, len(tab.Search.Hits))
 	}
 	if tab.Search.Current != 0 || tab.CurPage != 0 {
 		t.Fatalf("after re-search: current %d page %d, want 0/0", tab.Search.Current, tab.CurPage)

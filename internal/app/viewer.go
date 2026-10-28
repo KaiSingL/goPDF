@@ -389,6 +389,17 @@ func openDropped(s *AppState, paths []string) {
 	}
 }
 
+// Search-highlight colors, the classic reader scheme: pale yellow under
+// every hit, warm orange under the current one. Pages are white in both
+// themes, so fixed on-page hues work; the dark variants sit a touch
+// warmer and stronger so the marks hold up against dimmed chrome.
+var (
+	hitOtherLight = ui.RGBA(0xFF, 0xE9, 0x8A, 0.55) // pale yellow, light theme
+	hitOtherDark  = ui.RGBA(0xFF, 0xE0, 0x6E, 0.60) // pale yellow, dark theme
+	hitCurLight   = ui.RGBA(0xFF, 0xA2, 0x2B, 0.55) // warm orange, light theme
+	hitCurDark    = ui.RGBA(0xFF, 0x98, 0x1F, 0.60) // warm orange, dark theme
+)
+
 // buildPage builds one page: a white surface with shadow and radius
 // (spec §4), the rendered bitmap scaled to fit, a placeholder until the
 // render arrives, and the search-hit highlights painted over it.
@@ -405,9 +416,10 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, renderZ, 
 	hits := hitRects(t, i, z)
 	var curCol, otherCol ui.Color
 	if len(hits) > 0 {
-		th := c.Theme()
-		curCol = th.Accent.Alpha(0.40) // the current hit
-		otherCol = th.Text.Alpha(0.15) // the rest, muted
+		curCol, otherCol = hitCurLight, hitOtherLight
+		if c.Theme().Dark {
+			curCol, otherCol = hitCurDark, hitOtherDark
+		}
 	}
 
 	bm := pageBitmap(t, i, renderZ, z)
