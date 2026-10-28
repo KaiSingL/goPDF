@@ -15,3 +15,6 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
+
+// Render PDF annotations (highlights, squares, notes): patched local fork.
+replace github.com/gen2brain/go-fitz => ./third_party/go-fitz
