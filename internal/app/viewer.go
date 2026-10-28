@@ -584,6 +584,20 @@ func computeGeom(t *Tab, z float64) geom {
 	return g
 }
 
+// pageDipScale is the exact pt→DIP scale page is DRAWN at: dipPerPt*z
+// with the maxPageW reading-column cap the fit modes apply (FitZoom's z
+// is uncapped, so plain dipPerPt*z maps content oversized on windows
+// wider than maxPageW — the misaligned-highlights bug). ONE source of
+// truth: every pt→DIP mapping of page content (highlights, selections)
+// and the shown zoom percent go through here.
+func pageDipScale(t *Tab, page int, z float64) float64 {
+	pw, _ := t.PageSizePt(page)
+	if t.ZoomMode != ZoomCustom && pw*dipPerPt*z > float64(maxPageW) {
+		return float64(maxPageW) / pw
+	}
+	return dipPerPt * z
+}
+
 // pageDipSize is page's shown size in DIPs at zoom z: points scaled by
 // 96/72 * z, swapped for 90/270 rotation (Tab.PageSizePt does that). The
 // maxPageW cap (spec §4's 900px reading column) applies to the automatic
@@ -591,13 +605,8 @@ func computeGeom(t *Tab, z float64) geom {
 // size (capping there froze all growth past ~110% on a letter page).
 func pageDipSize(t *Tab, page int, z float64) (w, h float32) {
 	pw, ph := t.PageSizePt(page)
-	wf := pw * dipPerPt * z
-	hf := ph * dipPerPt * z
-	if t.ZoomMode != ZoomCustom && wf > float64(maxPageW) {
-		hf *= float64(maxPageW) / wf
-		wf = float64(maxPageW)
-	}
-	return float32(wf), float32(hf)
+	k := pageDipScale(t, page, z)
+	return float32(pw * k), float32(ph * k)
 }
 
 // centerOut returns lo..hi ordered outward from center: center itself,
@@ -817,13 +826,15 @@ type hitRect struct {
 }
 
 // hitRects maps the search hits on page into the page's DIP space at
-// zoom z, marking the current hit.
+// zoom z, marking the current hit. The scale is the one the page is
+// DRAWN at — pageDipScale, cap included — or the rects drift off their
+// glyphs in the capped fit modes.
 func hitRects(t *Tab, page int, z float64) []hitRect {
 	if len(t.Search.Hits) == 0 {
 		return nil
 	}
 	var out []hitRect
-	k := dipPerPt * z
+	k := pageDipScale(t, page, z)
 	for hi, h := range t.Search.Hits {
 		if h.Page != page {
 			continue

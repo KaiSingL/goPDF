@@ -52,6 +52,91 @@ func TestSearchHitsCarryExactRects(t *testing.T) {
 		len(tab.Search.Hits), page, len(hitRects(tab, page, 1.0)))
 }
 
+// TestHighlightScaleMatchesDrawnPage: in a fit mode on a wide window the
+// drawn page box is capped at maxPageW, but the fit zoom — and t.Zoom —
+// stays uncapped. hitRects must map with the CAPPED scale: with the raw
+// dipPerPt*z every highlight paints oversized and drifts off its text the
+// further it sits from the page's top-left (the "highlights misaligned on
+// wide windows" bug).
+func TestHighlightScaleMatchesDrawnPage(t *testing.T) {
+	s := reproState(t, 3)
+	tt := ui.NewTester(s.View, 1400, 900)
+	tab := s.Active()
+	t.Cleanup(func() { s.CloseTab(tab.ID) })
+
+	// The uncapped fit zoom for a wide viewport, as the viewer computes
+	// it; the drawn box must come out capped for this test to mean much.
+	z := tab.FitZoom(1300, 800)
+	boxW, boxH := pageDipSize(tab, 0, z)
+	if boxW > maxPageW+0.5 {
+		t.Fatalf("precondition: box width %.0f not capped at %.0f", boxW, maxPageW)
+	}
+	pw, ph := tab.PageSizePt(0)
+	kEff := float64(boxW) / pw // the exact pt→DIP scale of the drawn box
+	if abs64(float64(boxH)-ph*kEff) > 1 {
+		t.Fatalf("precondition: box height %.1f ≠ %.1f — pageDipSize is not a pure scale", boxH, ph*kEff)
+	}
+
+	buildIndex(t, tab)
+	tab.StartSearch("page")
+	s.RunSearch(tab)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(tab.Search.Hits) == 0 {
+		tt.Frame()
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(tab.Search.Hits) == 0 {
+		t.Fatal("no hits")
+	}
+
+	// hitRects iterates hits in order, each hit's Rects in order: zip the
+	// expected sizes (quad × the drawn scale) against what it produced.
+	type want struct{ w, h float64 }
+	var exp []want
+	for _, h := range tab.Search.Hits {
+		if h.Page != 0 {
+			continue
+		}
+		for _, r := range h.Rects {
+			exp = append(exp, want{(r.X1 - r.X0) * kEff, (r.Y1 - r.Y0) * kEff})
+		}
+	}
+	if len(exp) == 0 {
+		t.Fatal("no exact rects on page 0")
+	}
+	got := hitRects(tab, 0, z)
+	if len(got) != len(exp) {
+		t.Fatalf("hitRects gave %d rects, want %d", len(got), len(exp))
+	}
+	for i := range got {
+		g, e := got[i], exp[i]
+		if abs64(float64(g.rect[2])-e.w) > 0.5 || abs64(float64(g.rect[3])-e.h) > 0.5 {
+			t.Fatalf("rect %d size (%.1f,%.1f), want (%.1f,%.1f) — scale %.4f not the drawn scale %.4f",
+				i, g.rect[2], g.rect[3], e.w, e.h, float64(g.rect[2])/max64(1, e.w), kEff)
+		}
+		if g.rect[0] < -0.5 || g.rect[1] < -0.5 ||
+			float64(g.rect[0]+g.rect[2]) > float64(boxW)+0.5 ||
+			float64(g.rect[1]+g.rect[3]) > float64(boxH)+0.5 {
+			t.Fatalf("rect %d at (%.1f,%.1f) %.1fx%.1f escapes the %.0fx%.0f box",
+				i, g.rect[0], g.rect[1], g.rect[2], g.rect[3], boxW, boxH)
+		}
+	}
+}
+
+func abs64(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+func max64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // TestCroppedPageOriginMapping: with a page whose MediaBox starts at
 // (50,50), the origin is reported and the DIP mapping subtracts it, so a
 // hit at the top-left of the crop maps near (0,0) — not off-page.

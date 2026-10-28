@@ -392,7 +392,17 @@ func (t *Tab) ZoomIn()  { t.SetZoom(t.Zoom * ZoomStep) }
 func (t *Tab) ZoomOut() { t.SetZoom(t.Zoom / ZoomStep) }
 
 // ZoomPercent returns the zoom for display, e.g. "125%".
-func (t *Tab) ZoomPercent() string { return fmt.Sprintf("%.0f%%", t.Zoom*100) }
+// ZoomPercent is the zoom the current page is actually shown at: in the
+// fit modes on a wide window the reading-column cap (pageDipScale)
+// shrinks the page below the uncapped fit zoom, and the number on screen
+// is the number the user sees.
+func (t *Tab) ZoomPercent() string {
+	z := t.Zoom
+	if t.Doc != nil {
+		z = pageDipScale(t, t.CurPage, t.Zoom) / dipPerPt
+	}
+	return fmt.Sprintf("%.0f%%", z*100)
+}
 
 // RotateBy rotates the view 90° clockwise.
 func (t *Tab) RotateBy() {
