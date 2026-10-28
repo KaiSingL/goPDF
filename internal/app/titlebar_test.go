@@ -1,6 +1,6 @@
 // titlebar_test.go drives the integrated title bar (titlebar.go) in
-// ui.NewTester: its composition (name, the three menus, the optional app
-// icon) and its menu wiring. The Tester runs menu buttons headlessly for
+// ui.NewTester: its composition (the optional app icon, the three menus)
+// and its menu wiring. The Tester runs menu buttons headlessly for
 // real — Click opens the popup, Menu lists its items, ChooseMenuItem walks
 // submenus and reports the choice through the same Chosen path the window
 // uses — so the assertions cover the actions, not just the labels. What
@@ -34,14 +34,14 @@ func TestTitleBarComposition(t *testing.T) {
 	tt := ui.NewTester(titleView(s), 900, 48)
 	tt.SetTitleBar(winButtons)
 
-	for _, want := range []string{"GoPDF", "File", "View", "Go"} {
+	for _, want := range []string{"File", "View", "Go"} {
 		if !tt.HasText(want) {
 			t.Errorf("title bar missing %q; texts %q", want, tt.Texts())
 		}
 	}
 
 	// With an icon set (main decodes resources/icon.png), the bar builds
-	// the image and keeps its texts.
+	// the image ahead of the menus.
 	pngBytes := &bytes.Buffer{}
 	if err := png.Encode(pngBytes, image.NewRGBA(image.Rect(0, 0, 8, 8))); err != nil {
 		t.Fatal(err)
@@ -53,7 +53,7 @@ func TestTitleBarComposition(t *testing.T) {
 	SetAppIcon(bm)
 	t.Cleanup(func() { SetAppIcon(nil) })
 	tt.Frame()
-	for _, want := range []string{"GoPDF", "File", "View", "Go"} {
+	for _, want := range []string{"File", "View", "Go"} {
 		if !tt.HasText(want) {
 			t.Errorf("icon pass lost %q; texts %q", want, tt.Texts())
 		}

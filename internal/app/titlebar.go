@@ -13,7 +13,7 @@
 //     the window (DragWindow; double-click maximizes). Only the innermost
 //     pointer target decides: the menu buttons are interactive children,
 //     so a press on them opens the menu instead of dragging, while the
-//     icon, the name and the empty stretches drag.
+//     icon and the empty stretches drag.
 //   - Element.Menu makes the element a pop-up menu button; its build runs
 //     when the menu opens and again in the frame after a choice, where the
 //     item's Chosen reports it (the same idiom as toolbar.go's more menu).
@@ -35,12 +35,12 @@ import (
 var appIcon *ui.Bitmap
 
 // SetAppIcon installs the title bar's app icon; main calls it at startup,
-// before Run. Optional: without it the bar shows the name alone.
+// before Run. Optional: without it the bar simply starts with the menus.
 func SetAppIcon(bm *ui.Bitmap) { appIcon = bm }
 
-// titleBarView renders the title bar row: icon, app name, then the inline
-// menus. The row is the drag handle everywhere except over its menu
-// buttons.
+// titleBarView renders the title bar row: the app icon (when set), then
+// the inline menus. The row is the drag handle everywhere except over its
+// menu buttons.
 func titleBarView(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	// The row fills the title-bar band and clears the window buttons on
@@ -55,7 +55,6 @@ func titleBarView(c *ui.Context, s *AppState) {
 			if appIcon != nil {
 				ui.Image(c, appIcon).Size(18, 18)
 			}
-			ui.Text(c, "GoPDF").FontSize(12).Bold().TextColor(th.TextMuted)
 			titleFileMenu(c, s)
 			titleViewMenu(c, s)
 			titleGoMenu(c, s)

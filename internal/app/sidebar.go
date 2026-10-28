@@ -132,9 +132,9 @@ func thumbsPanel(c *ui.Context, s *AppState, t *Tab) {
 }
 
 // thumbRow is one page: a small page surface (aspect from PageSizePt) with
-// its page number, the current page ringed in the accent color. The image
-// comes from Tab.Cache; a miss kicks off one 72 DPI render — only for rows
-// the list actually builds, i.e. visible ones.
+// its page number below it, the current page ringed in the accent color.
+// The image comes from Tab.Cache; a miss kicks off one 72 DPI render — only
+// for rows the list actually builds, i.e. visible ones.
 func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
 	th := c.Theme()
 	key := pdf.CacheKey{Page: p, DPI: pdf.ThumbDPI, Rotate: 0}
@@ -149,33 +149,40 @@ func thumbRow(c *ui.Context, s *AppState, t *Tab, p int) {
 	w, h := thumbSize(t, p)
 	row := ui.ButtonBase(c).
 		Height(thumbRowHeight).Grow(1).
-		Gap(th.Space(1)).AlignItems(ui.Center).
 		Cursor(ui.CursorPointer)
 	row.Label(fmt.Sprintf("Page %d", p+1))
 	if p == t.CurPage {
 		row.Border(2, th.Accent).Radius(th.Space(1))
 	}
+	// ButtonBase is a ROW (same layout trap as the launcher's recent
+	// cards): its direct children would sit side by side. One Column child
+	// stacks the surface and the page number vertically instead; FillWidth
+	// lets the column center its children across the row.
 	row.Children(func() {
-		// The frame is a DrawOver stroke on the surface: DrawOver paints
-		// after children, so nothing the surface holds can cover it (a
-		// CSS-style Border+Padding inset was overpainted on the right and
-		// bottom edges by the filling image). The stroke also frames the
-		// empty placeholder while no render has arrived.
-		surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).
-			Background(th.Surface)
-		surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
-			p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
-		})
-		if img != nil {
-			surface.Children(func() {
-				ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h).
-					Fit(ui.FillBox).Radius(th.Space(0.5))
+		ui.Column(c).FillWidth().AlignItems(ui.Center).Gap(th.Space(1)).
+			Children(func() {
+				// The frame is a DrawOver stroke on the surface: DrawOver
+				// paints after children, so nothing the surface holds can
+				// cover it (a CSS-style Border+Padding inset was overpainted
+				// on the right and bottom edges by the filling image). The
+				// stroke also frames the empty placeholder while no render
+				// has arrived.
+				surface := ui.Box(c).Size(w, h).Radius(th.Space(0.5)).
+					Background(th.Surface)
+				surface.DrawOver(func(p *ui.Painter, r ui.Rect) {
+					p.Stroke(r, th.TextMuted.Alpha(0.40), th.Space(0.5), 1)
+				})
+				if img != nil {
+					surface.Children(func() {
+						ui.Image(c, thumbBitmapFor(t, p, img)).Size(w, h).
+							Fit(ui.FillBox).Radius(th.Space(0.5))
+					})
+				}
+				num := ui.Textf(c, "%d", p+1).FontSize(11)
+				if p != t.CurPage {
+					num.TextColor(th.TextMuted)
+				}
 			})
-		}
-		num := ui.Textf(c, "%d", p+1).FontSize(11)
-		if p != t.CurPage {
-			num.TextColor(th.TextMuted)
-		}
 	})
 	row.OnClick(func() { t.Navigate(p, 0) })
 }

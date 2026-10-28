@@ -185,9 +185,17 @@ func TestToolbarHistoryAndZoom(t *testing.T) {
 		t.Fatalf("after Zoom out: zoom %v", tab.Zoom)
 	}
 
-	// Reload clears the image cache and bumps the generation.
+	// Reload left the bar: the icon button is gone, and Reload Document
+	// now lives as the more menu's first item. It clears the image cache
+	// and bumps the generation.
+	if err := tt.Click("Reload"); err == nil {
+		t.Error("the toolbar still builds a Reload button")
+	}
 	gen := tab.ReloadGen
-	if err := tt.Click("Reload"); err != nil {
+	if err := tt.Click("More"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.ChooseMenuItem("Reload Document"); err != nil {
 		t.Fatal(err)
 	}
 	if tab.ReloadGen != gen+1 {

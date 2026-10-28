@@ -1,7 +1,8 @@
 // toolbar.go renders the second bar (spec §4 update: "back/forward per tab,
 // reload, search toggle, zoom - / 100% / +, share, comment (disabled v1),
 // more menu"; the search input itself moved into the right-side results
-// panel, searchpanel.go). One of the four chrome modules (Agent C).
+// panel, searchpanel.go, and reload moved into the more menu as its first
+// item). One of the four chrome modules (Agent C).
 //
 // API notes (verified against mygo v0.6.4 source):
 //   - ui.Toolbar lays its controls out flat-until-hovered, moves overflow
@@ -35,10 +36,6 @@ func toolbar(c *ui.Context, s *AppState) {
 			Disabled(len(t.Future) == 0)
 		fwd.Children(func() { ui.Icon(c, chromeIcons.forward).FontSize(16) })
 		fwd.OnClick(func() { t.Forward() })
-
-		reload := ui.Button(c, "").Label("Reload").Tooltip("Reload document")
-		reload.Children(func() { ui.Icon(c, chromeIcons.reload).FontSize(15) })
-		reload.OnClick(t.Reload)
 
 		// Search toggles the right-side results panel (searchpanel.go);
 		// the field itself lives there now.
@@ -74,6 +71,11 @@ func toolbar(c *ui.Context, s *AppState) {
 		more := ui.Button(c, "").Label("More").Tooltip("More actions")
 		more.Children(func() { ui.Icon(c, chromeIcons.more).FontSize(18) })
 		more.Menu(func(m *ui.Menu) {
+			// Reload lives here now (it left the bar to the more menu):
+			// first item, ahead of the rarer actions.
+			if m.Item("Reload Document").Chosen() {
+				t.Reload()
+			}
 			if m.Item("Rotate Clockwise").Chosen() {
 				t.RotateBy()
 			}
