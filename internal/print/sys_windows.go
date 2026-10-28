@@ -15,15 +15,19 @@ var (
 	comdlg32 = syscall.NewLazyDLL("comdlg32.dll")
 	gdi32    = syscall.NewLazyDLL("gdi32.dll")
 	winspool = syscall.NewLazyDLL("winspool.drv")
+	ole32    = syscall.NewLazyDLL("ole32.dll")
 
-	procPrintDlgW     = comdlg32.NewProc("PrintDlgW")
-	procDeleteDC      = gdi32.NewProc("DeleteDC")
-	procGetDeviceCaps = gdi32.NewProc("GetDeviceCaps")
-	procStretchDIBits = gdi32.NewProc("StretchDIBits")
-	procStartDocW     = gdi32.NewProc("StartDocW")
-	procEndDoc        = gdi32.NewProc("EndDoc")
-	procStartPage     = gdi32.NewProc("StartPage")
-	procEndPage       = gdi32.NewProc("EndPage")
+	procPrintDlgW          = comdlg32.NewProc("PrintDlgW")
+	procCommDlgExtendedErr = comdlg32.NewProc("CommDlgExtendedError")
+	procCoInitializeEx     = ole32.NewProc("CoInitializeEx")
+	procCoUninitialize     = ole32.NewProc("CoUninitialize")
+	procDeleteDC           = gdi32.NewProc("DeleteDC")
+	procGetDeviceCaps      = gdi32.NewProc("GetDeviceCaps")
+	procStretchDIBits      = gdi32.NewProc("StretchDIBits")
+	procStartDocW          = gdi32.NewProc("StartDocW")
+	procEndDoc             = gdi32.NewProc("EndDoc")
+	procStartPage          = gdi32.NewProc("StartPage")
+	procEndPage            = gdi32.NewProc("EndPage")
 )
 
 // Print dialog flags (winuser/prnsetup.h subset).
@@ -81,9 +85,32 @@ type printDlg struct {
 	lpSetupTemplateName uintptr
 }
 
+// comInitialize pins the calling goroutine's thread with an STA COM
+// apartment — the state the common dialogs want. A bare goroutine thread
+// has no COM apartment at all, and PrintDlgW failing to open returns 0,
+// which reads as "the user canceled": the dialog silently never appears.
+// S_FALSE (1, already initialized on this thread) is as good as S_OK.
+// coUninitialize releases the apartment; the thread stays pinned until
+// printThreadDone.
+func comInitialize() error {
+	const coinitApartmentThreaded = 2
+	r, _, e := procCoInitializeEx.Call(0, coinitApartmentThreaded)
+	if int32(r) < 0 {
+		return fmt.Errorf("print: CoInitializeEx: %v", e)
+	}
+	return nil
+}
+
+func coUninitialize() { procCoUninitialize.Call() }
+
+func commDlgExtendedError() uint32 {
+	r, _, _ := procCommDlgExtendedErr.Call()
+	return uint32(r)
+}
+
 // showPrintDialog opens PrintDlgW preset to the document's page range and
 // returns the result, the printer DC (when ok), whether to proceed, and
-// any error.
+// any error. Call from the thread comInitialize pinned.
 func showPrintDialog(numPages int, docName string) (res dialogResult, hdc uintptr, ok bool, err error) {
 	d := &printDlg{
 		lStructSize: uint32(unsafe.Sizeof(printDlg{})),
@@ -94,14 +121,15 @@ func showPrintDialog(numPages int, docName string) (res dialogResult, hdc uintpt
 		nCopies:     1,
 		flags:       pdPageNums | pdReturnDC | pdNoSelection | pdUseDevCopies,
 	}
-	r1, _, e := procPrintDlgW.Call(uintptr(unsafe.Pointer(d)))
+	r1, _, _ := procPrintDlgW.Call(uintptr(unsafe.Pointer(d)))
 	if r1 == 0 {
-		// Cancel or dialog failure: commdlg errors come via
-		// CommDlgExtendedError; 0 with no error is a plain cancel.
-		if e != nil && e != syscall.Errno(0) {
-			_ = e // extended errors need comdlg32#CommDlgExtendedError; treat as cancel
+		// 0 is a cancel OR a dialog that never opened; only
+		// CommDlgExtendedError tells them apart, and a failure swallowed
+		// here reads to the user as "the menu item does nothing".
+		if ext := commDlgExtendedError(); ext != 0 {
+			return dialogResult{}, 0, false, fmt.Errorf("print: the print dialog failed to open (CommDlgExtendedError 0x%x)", ext)
 		}
-		return dialogResult{}, 0, false, nil
+		return dialogResult{}, 0, false, nil // plain cancel
 	}
 	if d.hDC == 0 {
 		return dialogResult{}, 0, false, fmt.Errorf("print: dialog returned no device context")

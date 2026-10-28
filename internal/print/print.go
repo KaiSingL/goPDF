@@ -11,6 +11,7 @@ package print
 import (
 	"fmt"
 	"image"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -31,12 +32,24 @@ var busy sync.Mutex
 // Print shows the print dialog and prints the range the user chose. It
 // returns (printed, err); printed=false with a nil error means the user
 // canceled. Call from a goroutine — the dialog blocks.
-func Print(doc *pdf.Doc, name string) (bool, error) {
+//
+// The whole job runs pinned to one thread with an STA COM apartment
+// (sys_windows.go comInitialize): common dialogs fail to open on a bare
+// goroutine thread — returning 0, which reads as a cancel — and the
+// printer DC belongs to the thread that asked for it.
+func Print(doc *pdf.Doc, name string) (printed bool, err error) {
 	if doc == nil || doc.NumPages() == 0 {
 		return false, fmt.Errorf("print: nothing to print")
 	}
 	busy.Lock()
 	defer busy.Unlock()
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := comInitialize(); err != nil {
+		return false, err
+	}
+	defer coUninitialize()
 
 	dlg, hdc, ok, err := showPrintDialog(doc.NumPages(), name)
 	if err != nil {
