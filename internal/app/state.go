@@ -57,9 +57,10 @@ type SearchState struct {
 }
 
 // SelectionState is the text-selection state of one tab (selection.go;
-// UI thread only — pointer events and the index hop land there). The
-// geometry is page space (points, WITH the box origin, unrotated), so a
-// selection survives zoom, rotation and scrolling.
+// UI thread only — pointer events and the worker hop land there). The
+// drag geometry is page space (points, WITH the box origin, unrotated),
+// so a selection survives zoom, rotation and scrolling; the painted
+// geometry is the exact MuPDF quads the worker returned.
 type SelectionState struct {
 	Active   bool // a selection exists (drag in progress or finished)
 	Dragging bool // the button is still down
@@ -67,9 +68,10 @@ type SelectionState struct {
 	Anchor   [2]float64 // press point, page space
 	Cur      [2]float64 // current drag point, page space (clamped)
 
-	Spans     []pdf.TextSpan // the covered spans — the copy source
-	HaveSpans bool           // spans resolved (index was ready)
-	pending   bool           // an index build for the selection is in flight
+	Quads    []pdf.HitRect // exact fz_highlight_selection quads
+	Text     string        // fz_copy_selection text of the same range
+	resolved bool          // the worker answered the latest request
+	gen      uint64        // request generation: stale replies die on it
 }
 
 // HistoryEntry is one back/forward navigation stop.

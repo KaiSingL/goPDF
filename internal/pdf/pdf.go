@@ -212,6 +212,41 @@ func (d *Doc) loop(fit *fitz.Document) {
 // whose widths the HTML text extraction only estimates.
 type HitRect struct{ X0, Y0, X1, Y1 float64 }
 
+// SelectionResult is the exact geometry and text of one selection.
+type SelectionResult struct {
+	Quads []HitRect // exact fz_highlight_selection quads, page space
+	Text  string    // fz_copy_selection text of the same range
+}
+
+// SelectionAsync computes the exact selection between two page-space
+// points on the hi lane (drag feedback is latency-sensitive) and calls
+// fn on the worker goroutine. The fork caches each page's structured
+// text, so only the first selection on a page pays the extraction.
+func (d *Doc) SelectionAsync(page int, x0, y0, x1, y1 float64, fn func(SelectionResult, error)) {
+	if d.closed.Load() || fn == nil {
+		return
+	}
+	if page < 0 || page >= d.pages {
+		go fn(SelectionResult{}, ErrBadPage)
+		return
+	}
+	d.hi <- func(f *fitz.Document) {
+		if d.closed.Load() {
+			return
+		}
+		quads, text, err := f.SelectionQuads(page, x0, y0, x1, y1)
+		if err != nil {
+			fn(SelectionResult{}, err)
+			return
+		}
+		res := SelectionResult{Text: text, Quads: make([]HitRect, len(quads))}
+		for i, q := range quads {
+			res.Quads[i] = HitRect{X0: q.X0, Y0: q.Y0, X1: q.X1, Y1: q.Y1}
+		}
+		fn(res, nil)
+	}
+}
+
 // SearchQuadsAsync returns the exact hit rectangles of needle on one page
 // through MuPDF's fz_search (case-insensitive, up to 64 per page) on the
 // doc worker; fn runs on that goroutine. Used for painting highlights.

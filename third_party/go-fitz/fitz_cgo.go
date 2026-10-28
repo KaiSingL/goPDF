@@ -90,6 +90,57 @@ int search_page(fz_context *ctx, fz_page *page, const char *needle, fz_quad *qua
 	return n;
 }
 
+// GoPDF patch: the structured text of a page, run exactly as
+// fz_search_page runs the page — the whole page under the identity ctm —
+// so selection quads and search quads share one coordinate space. Caller
+// owns the result (fz_drop_stext_page).
+fz_stext_page *stext_from_page(fz_context *ctx, fz_page *page) {
+	fz_stext_page *text = NULL;
+	fz_device *dev = NULL;
+
+	fz_try(ctx) {
+		fz_rect b = fz_bound_page(ctx, page);
+		text = fz_new_stext_page(ctx, b);
+		fz_stext_options opts = {0};
+		dev = fz_new_stext_device(ctx, text, &opts);
+		fz_run_page(ctx, page, dev, fz_identity, NULL);
+		fz_close_device(ctx, dev);
+	}
+	fz_always(ctx) {
+		fz_drop_device(ctx, dev);
+	}
+	fz_catch(ctx) {
+		fz_drop_stext_page(ctx, text);
+		return NULL;
+	}
+
+	return text;
+}
+
+// GoPDF patch: exact selection geometry — fz_highlight_selection quads
+// plus fz_copy_selection text over the stext page built above. n < 0 is
+// an error; *out_text (NULL for an empty selection) is fz_malloc'd —
+// free it with drop_string.
+int selection_quads(fz_context *ctx, fz_stext_page *text, float x0, float y0, float x1, float y1, fz_quad *quads, int max_quads, char **out_text) {
+	int n = 0;
+	fz_try(ctx) {
+		fz_point a = fz_make_point(x0, y0);
+		fz_point b = fz_make_point(x1, y1);
+		n = fz_highlight_selection(ctx, text, a, b, quads, max_quads);
+		*out_text = fz_copy_selection(ctx, text, a, b, '\n');
+	}
+	fz_catch(ctx) {
+		return -1;
+	}
+
+	return n;
+}
+
+// GoPDF patch: free a string MuPDF allocated.
+void drop_string(fz_context *ctx, char *s) {
+	fz_free(ctx, s);
+}
+
 static void silent_warning(void *user, const char *message) {}
 
 void silence_warnings(fz_context *ctx) {
@@ -166,6 +217,12 @@ type Document struct {
 	doc    *C.struct_fz_document
 	mtx    sync.Mutex
 	stream *C.fz_stream
+
+	// GoPDF patch: structured text of the last few pages SelectionQuads
+	// touched, so drag updates reuse one extraction (f.mtx guards it, as
+	// every Document use).
+	stextPages map[int]*C.fz_stext_page
+	stextOrder []int
 }
 
 // New returns new fitz document.
@@ -423,6 +480,89 @@ func (f *Document) SearchPage(pageNumber int, needle string) ([]SearchQuad, erro
 		out = append(out, SearchQuad{X0: x0, Y0: y0, X1: x1, Y1: y1})
 	}
 	return out, nil
+}
+
+// selectionQuadMax caps fz_highlight_selection's quad buffer per call: a
+// drag can cross many lines, but no realistic single-page selection
+// needs more. (GoPDF fork.)
+const selectionQuadMax = 512
+
+// stextPage returns the cached structured text of a page, building and
+// caching it on first use (the four most recent pages stay). The caller
+// holds f.mtx. (GoPDF fork.)
+func (f *Document) stextPage(pageNumber int) *C.fz_stext_page {
+	if t, ok := f.stextPages[pageNumber]; ok {
+		return t
+	}
+	page := C.load_page(f.ctx, f.doc, C.int(pageNumber))
+	if page == nil {
+		return nil
+	}
+	defer C.fz_drop_page(f.ctx, page)
+
+	t := C.stext_from_page(f.ctx, page)
+	if t == nil {
+		return nil
+	}
+	if f.stextPages == nil {
+		f.stextPages = map[int]*C.fz_stext_page{}
+	}
+	f.stextPages[pageNumber] = t
+	f.stextOrder = append(f.stextOrder, pageNumber)
+	for len(f.stextOrder) > 4 {
+		old := f.stextOrder[0]
+		f.stextOrder = f.stextOrder[1:]
+		if ot, ok := f.stextPages[old]; ok {
+			C.fz_drop_stext_page(f.ctx, ot)
+			delete(f.stextPages, old)
+		}
+	}
+	return t
+}
+
+// SelectionQuads returns the exact highlight quads and plain text of the
+// selection from (x0,y0) to (x1,y1) on the page, in page space (points,
+// as SearchPage's quads are): fz_highlight_selection over the same
+// structured text fz_search searches, so selection geometry cannot drift
+// from the glyphs the way estimated span rectangles can. Serialized with
+// the other Document calls on the internal mutex. (GoPDF fork.)
+func (f *Document) SelectionQuads(pageNumber int, x0, y0, x1, y1 float64) ([]SearchQuad, string, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return nil, "", ErrPageMissing
+	}
+
+	text := f.stextPage(pageNumber)
+	if text == nil {
+		return nil, "", ErrRunPageContents
+	}
+
+	var quads [selectionQuadMax]C.fz_quad
+	var cstr *C.char
+	n := int(C.selection_quads(f.ctx, text,
+		C.float(x0), C.float(y0), C.float(x1), C.float(y1),
+		&quads[0], selectionQuadMax, &cstr))
+	if n < 0 {
+		return nil, "", ErrRunPageContents
+	}
+	sel := ""
+	if cstr != nil {
+		sel = C.GoString(cstr)
+		C.drop_string(f.ctx, cstr)
+	}
+
+	out := make([]SearchQuad, 0, n)
+	for i := 0; i < n; i++ {
+		q := quads[i]
+		x0 := math.Min(math.Min(float64(q.ul.x), float64(q.ur.x)), math.Min(float64(q.ll.x), float64(q.lr.x)))
+		x1 := math.Max(math.Max(float64(q.ul.x), float64(q.ur.x)), math.Max(float64(q.ll.x), float64(q.lr.x)))
+		y0 := math.Min(math.Min(float64(q.ul.y), float64(q.ur.y)), math.Min(float64(q.ll.y), float64(q.lr.y)))
+		y1 := math.Max(math.Max(float64(q.ul.y), float64(q.ur.y)), math.Max(float64(q.ll.y), float64(q.lr.y)))
+		out = append(out, SearchQuad{X0: x0, Y0: y0, X1: x1, Y1: y1})
+	}
+	return out, sel, nil
 }
 
 // ImagePNG returns image for given page number as PNG bytes.
@@ -762,6 +902,13 @@ func (f *Document) Bound(pageNumber int) (image.Rectangle, error) {
 
 // Close closes the underlying fitz document.
 func (f *Document) Close() error {
+	// GoPDF patch: drop the cached stext pages before the context they
+	// live in.
+	for _, t := range f.stextPages {
+		C.fz_drop_stext_page(f.ctx, t)
+	}
+	f.stextPages, f.stextOrder = nil, nil
+
 	if f.stream != nil {
 		C.fz_drop_stream(f.ctx, f.stream)
 	}

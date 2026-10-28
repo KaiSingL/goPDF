@@ -1,6 +1,6 @@
 // selection.go is text selection in the viewer: a left-button drag over
-// a page covers the text spans it crosses, the page overlay paints them,
-// and Ctrl+C copies (shortcuts.go; Esc clears).
+// a page covers the text it crosses, the page overlay paints it, and
+// Ctrl+C copies (shortcuts.go; Esc clears).
 //
 // Pointer events arrive at the page's input handler in LOCAL DIPs
 // (relative to the page box, verified in mygo's engine.deliver), with
@@ -12,23 +12,35 @@
 // origin-aware like the search highlights':
 //
 //	dipToPagePt  local DIPs → page points (the inverse of spanDipRect)
-//	spanDipRect  page points → local DIPs (shared with hitRects)
+//	quadDipRect  page points → local DIPs (shared with hitRects)
 //
-// and both scale with pageDipScale — the exact scale the page is DRAWN
-// at, cap included — so the overlay cannot drift from the glyphs.
+// both scaled by pageDipScale — the exact scale the page is DRAWN at,
+// cap included — so the overlay cannot drift from the glyphs.
 //
-// The span set needs the doc's text index. A selection that starts
-// before the index exists shows the raw drag rect immediately and
-// resolves its spans when the build lands (the worker → UI hop of
-// components.go, same as search); with the index already cached — the
-// common case after any search — every move resolves synchronously.
+// GEOMETRY is MuPDF's own: every move asks the doc worker for
+// fz_highlight_selection quads plus fz_copy_selection text over the
+// page's structured text — the same text fz_search searches — which is
+// exact where the index's span rectangles are estimates (the estimates
+// that misaligned highlights on real documents before search switched
+// to quads; selection hit the same wall). Each request carries the
+// drag's generation counter, so a stale reply dies quietly; the fork
+// caches a page's structured text, so only the first selection on a
+// page pays the extraction. Until the first reply lands the raw drag
+// rect paints — instant feedback, exact in a frame or two.
 package app
 
 import (
-	"strings"
-
 	"gopdf/internal/pdf"
 )
+
+// abs64 is |x| — the tiny float helper selection and the highlight
+// tests share (Go's builtins cover min/max).
+func abs64(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
 
 // dipToPagePt inverts spanDipRect for a point: coordinates local to the
 // rotated, drawn page → page-space points (unrotated, box origin
@@ -71,17 +83,8 @@ func (t *Tab) selRectPts() (x0, y0, x1, y1 float64) {
 	return
 }
 
-// abs64 is |x| — the tiny float helper selection.go and the highlight
-// tests share (Go's builtins cover min/max).
-func abs64(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 // StartSelection begins a drag at x,y — local DIPs on page — replacing
-// any previous selection, and makes sure the text index is coming.
+// any previous selection, and asks the worker for the exact geometry.
 func (s *AppState) StartSelection(t *Tab, page int, x, y float32) {
 	if t == nil || t.Doc == nil {
 		return
@@ -92,7 +95,7 @@ func (s *AppState) StartSelection(t *Tab, page int, x, y float32) {
 		Active: true, Dragging: true, Page: page,
 		Anchor: [2]float64{px, py}, Cur: [2]float64{px, py},
 	}
-	s.ensureSelectionIndex(t)
+	s.requestSelection(t)
 }
 
 // ExtendSelection moves the drag point. x,y are local DIPs on the
@@ -110,11 +113,7 @@ func (s *AppState) ExtendSelection(t *Tab, page int, x, y float32) {
 		min(max(px, ox), ox+w0),
 		min(max(py, oy), oy+h0),
 	}
-	if t.Index() != nil {
-		t.resolveSelSpans() // cached index: every move resolves at once
-	} else {
-		s.ensureSelectionIndex(t)
-	}
+	s.requestSelection(t)
 }
 
 // FinishSelection ends the drag. A click — a press/release that moved
@@ -134,80 +133,57 @@ func (s *AppState) FinishSelection(t *Tab) {
 // ClearSelection drops the selection (Esc, a click, a new drag).
 func (t *Tab) ClearSelection() { t.Sel = SelectionState{} }
 
-// ensureSelectionIndex starts the index build if the tab has none, and
-// resolves the live selection when it lands (worker → UI hop; the
-// pending flag keeps moves from stacking requests).
-func (s *AppState) ensureSelectionIndex(t *Tab) {
-	if t.Index() != nil || t.Sel.pending {
+// requestSelection asks the doc worker for the exact quads and text of
+// the live selection. The generation counter kills replies that race a
+// newer drag position (or a cleared selection).
+func (s *AppState) requestSelection(t *Tab) {
+	if !t.Sel.Active || t.Doc == nil {
 		return
 	}
-	t.Sel.pending = true
-	t.Doc.IndexAsync(func(ix *pdf.Index, err error) {
-		updateFromWorker(func() {
+	t.Sel.gen++
+	gen := t.Sel.gen
+	page := t.Sel.Page
+	x0, y0, x1, y1 := t.selRectPts()
+	t.Doc.SelectionAsync(page, x0, y0, x1, y1, func(res pdf.SelectionResult, err error) {
+		updateFromWorker(func() { // worker-side: hop, never inline
 			cur := s.Active()
-			if cur == nil || cur.ID != t.ID || !cur.Sel.Active || cur.Index() != nil {
-				return // tab closed, selection gone, or another path built it
+			if cur == nil || cur.ID != t.ID || !cur.Sel.Active || cur.Sel.gen != gen {
+				return // stale: newer drag point, cleared, or tab closed
 			}
-			cur.Sel.pending = false
-			if err == nil && ix != nil {
-				cur.SetIndex(ix)
-				cur.resolveSelSpans()
+			if err != nil {
+				return // keep the previous geometry; the next move retries
 			}
+			cur.Sel.Quads = res.Quads
+			cur.Sel.Text = res.Text
+			cur.Sel.resolved = true
 		})
 	})
 }
 
-// resolveSelSpans recomputes the covered spans from the index (UI
-// thread; called on moves and when the index lands). The spans are the
-// index's page order — the extraction's reading order.
-func (t *Tab) resolveSelSpans() {
-	ix := t.Index()
-	if ix == nil || !t.Sel.Active {
-		return
-	}
-	x0, y0, x1, y1 := t.selRectPts()
-	t.Sel.Spans = spansOverlapping(ix, t.Sel.Page, pdf.HitRect{X0: x0, Y0: y0, X1: x1, Y1: y1})
-	t.Sel.HaveSpans = true
-}
-
-// SelectionText is the selection as copyable text: spans joined with
-// spaces within a line and newlines between lines. Two spans share a
-// line when their baselines sit within 60% of the shorter span's height.
+// SelectionText is the selection as copyable text (fz_copy_selection —
+// the same range the quads highlight, not a span join).
 func (t *Tab) SelectionText() string {
-	if !t.Sel.Active || len(t.Sel.Spans) == 0 {
+	if !t.Sel.Active {
 		return ""
 	}
-	var b strings.Builder
-	var prevY, prevH float64
-	for i, sp := range t.Sel.Spans {
-		if i > 0 {
-			if abs64(sp.Y-prevY) < 0.6*min(sp.H, prevH) {
-				b.WriteByte(' ')
-			} else {
-				b.WriteByte('\n')
-			}
-		}
-		b.WriteString(sp.Text)
-		prevY, prevH = sp.Y, sp.H
-	}
-	return b.String()
+	return t.Sel.Text
 }
 
 // selPaintRects is the selection overlay of page at the drawn scale k
-// (viewer.go paints them like search hits): the covered spans once
-// resolved, else the raw drag rect for instant feedback while the index
-// is still on its way. A resolved-but-empty selection paints nothing.
+// (viewer.go paints them like search hits): the exact quads once the
+// worker answered, else the raw drag rect for instant feedback. A
+// resolved-but-empty selection paints nothing.
 func selPaintRects(t *Tab, page int, k float64) [][4]float32 {
 	if !t.Sel.Active || t.Sel.Page != page {
 		return nil
 	}
-	if t.Sel.HaveSpans {
-		if len(t.Sel.Spans) == 0 {
+	if t.Sel.resolved {
+		if len(t.Sel.Quads) == 0 {
 			return nil
 		}
-		out := make([][4]float32, 0, len(t.Sel.Spans))
-		for _, sp := range t.Sel.Spans {
-			out = append(out, spanDipRect(t, page, sp, k))
+		out := make([][4]float32, 0, len(t.Sel.Quads))
+		for _, q := range t.Sel.Quads {
+			out = append(out, quadDipRect(t, page, q, k))
 		}
 		return out
 	}
