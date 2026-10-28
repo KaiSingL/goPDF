@@ -116,6 +116,10 @@ type AppState struct {
 	// panel (Ctrl+F, the toolbar's search icon); searchpanel.go builds it.
 	ShowSearchPanel bool
 
+	// ShowProperties toggles the Document Properties dialog (File ▸
+	// Document Properties); docprops.go builds it.
+	ShowProperties bool
+
 	ClosedPaths []string // recently closed tab paths, newest first
 	Recents     []string // recent document paths, newest first
 

@@ -37,8 +37,9 @@ func (s *AppState) View(c *ui.Context) {
 			}
 		})
 
-		ui.Divider(c)        // ─ over the status bar
-		statusBar(c, s)      // C: page X/Y, fit mode, zoom, theme toggle
-		paletteOverlay(c, s) // D: Ctrl+K palette, drawn above everything
+		ui.Divider(c)           // ─ over the status bar
+		statusBar(c, s)         // C: page X/Y, fit mode, zoom, theme toggle
+		paletteOverlay(c, s)    // D: Ctrl+K palette, drawn above everything
+		propertiesOverlay(c, s) // D: Document Properties dialog (File menu)
 	})
 }
