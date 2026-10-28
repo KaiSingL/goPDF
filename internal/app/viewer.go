@@ -817,10 +817,10 @@ func hitRects(t *Tab, page int, z float64) []hitRect {
 			continue
 		}
 		cur := hi == t.Search.Current
-		if rects := t.Search.QuadsByHit[hi]; len(rects) > 0 {
+		if len(h.Rects) > 0 {
 			// Exact geometry from MuPDF's own search — the estimated
-			// spans below are the fallback until the quads land.
-			for _, r := range rects {
+			// spans below are the fallback for text-only hits.
+			for _, r := range h.Rects {
 				out = append(out, hitRect{rect: quadDipRect(t, page, r, k), current: cur})
 			}
 			continue
@@ -849,6 +849,11 @@ func quadDipRect(t *Tab, page int, r pdf.HitRect, k float64) [4]float32 {
 // where w0, h0 are the unrotated page size in points.
 func spanDipRect(t *Tab, page int, sp pdf.TextSpan, k float64) [4]float32 {
 	w0, h0 := t.Doc.PageSize(page)
+	// Page-space coordinates (spans, search quads) are reported against
+	// the box origin; the view is 0,0-anchored, so subtract it — a
+	// CropBox not starting at 0,0 shifts every highlight otherwise.
+	ox, oy := t.Doc.PageOrigin(page)
+	sp.X, sp.Y = sp.X-ox, sp.Y-oy
 	var x, y, w, h float64
 	switch t.Rotate {
 	case 90:

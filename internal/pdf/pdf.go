@@ -63,10 +63,13 @@ type TextSpan struct {
 	Text string
 }
 
-// SearchHit is one match: the page and every span the match covers.
+// SearchHit is one match: the page, every span the match covers, and —
+// when it comes from MuPDF's own search — the exact hit rectangle in
+// page space (points, against the box origin, as spans are).
 type SearchHit struct {
 	Page  int
 	Spans []TextSpan
+	Rects []HitRect // exact fz_search geometry; nil for text-only hits
 }
 
 // CacheKey identifies a rendered page image.
@@ -109,12 +112,14 @@ var docSeq atomic.Uint64
 // Doc is one open document. Create with Open. All methods are safe from any
 // goroutine; slow work happens on the doc's worker (see package comment).
 type Doc struct {
-	path  string
-	id    string
-	pages int
-	meta  map[string]string
-	sizes [][2]float64 // raw page size in points, per page
-	toc   []OutlineNode
+	path    string
+	id      string
+	pages   int
+	meta    map[string]string
+	sizes   [][2]float64 // raw page size in points, per page
+	origins [][2]float64 // Bound().Min per page: a CropBox not starting at
+	// 0,0 carries every page-space coordinate with this offset
+	toc []OutlineNode
 
 	fit    *fitz.Document            // set by Open, read by Close after <-d.done
 	hi     chan func(*fitz.Document) // page renders: latency-sensitive
@@ -151,6 +156,7 @@ func Open(path string) (*Doc, error) {
 		done:  make(chan struct{}),
 	}
 	d.sizes = make([][2]float64, d.pages)
+	d.origins = make([][2]float64, d.pages)
 	for i := 0; i < d.pages; i++ {
 		b, err := fit.Bound(i)
 		if err != nil {
@@ -158,6 +164,7 @@ func Open(path string) (*Doc, error) {
 			return nil, fmt.Errorf("pdf: page %d bounds: %w", i, err)
 		}
 		d.sizes[i] = [2]float64{float64(b.Dx()), float64(b.Dy())}
+		d.origins[i] = [2]float64{float64(b.Min.X), float64(b.Min.Y)}
 	}
 	d.toc = outlineTree(fit) // empty outline is not an error (fitz quirk)
 
@@ -272,6 +279,20 @@ func (d *Doc) PageSize(page int) (w, h float64) {
 		page = 0
 	}
 	return d.sizes[page][0], d.sizes[page][1]
+}
+
+// PageOrigin returns the page's Bound().Min in points: fitz reports
+// page-space coordinates (text spans, search quads) against the box
+// origin, so mapping them onto a 0,0-anchored view subtracts this. It is
+// 0,0 for ordinary pages and the CropBox offset for cropped ones.
+func (d *Doc) PageOrigin(page int) (x, y float64) {
+	if page < 0 || page >= d.pages {
+		if len(d.origins) == 0 {
+			return 0, 0
+		}
+		page = 0
+	}
+	return d.origins[page][0], d.origins[page][1]
 }
 
 // Outline returns the table of contents tree; empty when the file has none.
