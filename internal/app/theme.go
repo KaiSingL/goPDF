@@ -1,7 +1,7 @@
 // theme.go owns the app-visible appearance mode: auto (follow the system,
-// the default), dark or light. The mode is package state because the
-// components contract calls toggleTheme without arguments, and the status
-// bar (C) and palette read it through the same helper.
+// the default), dark or light. The mode is package state because main and
+// the settings load write it at startup and everything else applies it
+// through the same helpers.
 //
 // The mode maps 1:1 to mygo.Theme.SetSource (ThemeSystem, ThemeDark,
 // ThemeLight). MyGo documents SetSource as callable before App.Run from
@@ -63,16 +63,16 @@ func ApplyThemeAtStartup() {
 
 // SetThemeMode switches to an explicit mode — "auto", "dark" or "light"
 // (anything else normalizes to auto, exactly like the saved settings —
-// and applies it at once. The View menu's Theme submenu and the palette
-// call it with a fixed choice; ToggleTheme stays the status bar button's
-// cycling entry point.
+// and applies it at once. The theme slider (statusbar.go), the View
+// menu's Theme submenu and the palette call it with a fixed choice.
 func SetThemeMode(mode string) {
 	ThemeMode = NormalizeThemeMode(mode)
 	ApplyTheme()
 }
 
 // ToggleTheme cycles auto → dark → light → auto and applies the new mode
-// at once. It replaces the stub of components.go.
+// at once. No surface cycles by default any more — every mode is one
+// visible click away — but the cycle stays as a helper (and its test).
 func ToggleTheme() {
 	switch ThemeMode {
 	case "auto":
@@ -84,7 +84,3 @@ func ToggleTheme() {
 	}
 	ApplyTheme()
 }
-
-// toggleTheme is the components.go contract name, used by the status bar
-// (C) and the palette.
-func toggleTheme() { ToggleTheme() }

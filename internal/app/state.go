@@ -139,6 +139,16 @@ type AppState struct {
 	// Document Properties); docprops.go builds it.
 	ShowProperties bool
 
+	// ShowPrintError carries a printing failure to an alert (the dialog
+	// runs on a worker goroutine; errors it logs are invisible in a GUI
+	// app, and "nothing happened" is the worst possible error report).
+	ShowPrintError bool
+	PrintError     string
+
+	// ShowGoTo toggles the "Go to page" row under the toolbar (the
+	// toolbar's page indicator opens it); gotoRow builds it.
+	ShowGoTo bool
+
 	ClosedPaths []string // recently closed tab paths, newest first
 	Recents     []string // recent document paths, newest first
 

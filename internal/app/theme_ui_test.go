@@ -1,15 +1,14 @@
 // theme_ui_test.go drives the theme surfaces: the status bar's theme
-// button (stable label, mode icon, mode-naming tooltip, click = cycle),
-// the View menu's Theme submenu (three checked items whose picks apply
-// through SetThemeMode, mirroring chrome_test.go's menu-driving patterns)
-// and the palette's three Theme commands. Safe headless throughout: with
-// no running app, ApplyTheme/SetThemeMode only do the bookkeeping (the
-// mygo hop is gated on mygo.App.IsReady).
+// slider (three segments, a click picks the mode, the knob animates),
+// the View menu's Theme submenu and the palette's three Theme commands.
+// Safe headless throughout: with no running app, ApplyTheme/SetThemeMode
+// only do the bookkeeping (the mygo hop is gated on mygo.App.IsReady).
 package app
 
 import (
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -22,58 +21,47 @@ func withThemeMode(t *testing.T, mode string) {
 	t.Cleanup(func() { ThemeMode = old })
 }
 
-// TestStatusBarThemeButton checks that the button renders under its
-// stable accessible label and that clicking it still cycles the mode
-// auto → dark → light → auto.
-func TestStatusBarThemeButton(t *testing.T) {
+// TestStatusBarThemeSwitch drives the theme slider: the three segments
+// render, clicking one applies that mode (through SetThemeMode — no
+// cycling), and frames while the knob animates are calm.
+func TestStatusBarThemeSwitch(t *testing.T) {
 	withThemeMode(t, "auto")
 	s := chromeState(1)
 	tt := ui.NewTester(func(c *ui.Context) { statusBar(c, s) }, 700, 80)
 
-	if _, ok := tt.Find("Toggle dark mode"); !ok {
-		t.Fatalf("theme button missing; texts %q", tt.Texts())
-	}
-
-	// Each click advances the cycle (OnClick runs after the build pass,
-	// so the click itself is enough — no extra frames needed to flip).
-	for _, want := range []string{"dark", "light", "auto"} {
-		if err := tt.Click("Toggle dark mode"); err != nil {
+	for _, tc := range []struct{ label, want string }{
+		{"Theme: dark", "dark"},
+		{"Theme: light", "light"},
+		{"Theme: follow system", "auto"},
+	} {
+		if err := tt.Click(tc.label); err != nil {
 			t.Fatal(err)
 		}
-		if ThemeMode != want {
-			t.Fatalf("after click: ThemeMode = %q, want %q", ThemeMode, want)
+		if ThemeMode != tc.want {
+			t.Fatalf("after clicking %q: ThemeMode = %q, want %q", tc.label, ThemeMode, tc.want)
 		}
-	}
-
-	// Extra frames while the icon swaps between modes: no panic, the
-	// button stays.
-	tt.Frame()
-	tt.Frame()
-	if _, ok := tt.Find("Toggle dark mode"); !ok {
-		t.Errorf("theme button lost after cycling; texts %q", tt.Texts())
+		tt.Advance(32 * time.Millisecond) // a few frames of knob glide
+		tt.Frame()
 	}
 }
 
-// TestThemeButtonIconAndTooltip checks the mode→icon and mode→tooltip
-// mappings through their helpers: the Tester can neither read which SVG
-// an Icon builds nor a button's tooltip, so the button's mode-dependent
-// surface is asserted here directly. Icon = the current MODE (monitor =
-// follow system, moon = dark, sun = light), NOT the resolved theme.
-func TestThemeButtonIconAndTooltip(t *testing.T) {
+// TestThemeModeIcon checks the mode→icon mapping through its helper:
+// the Tester can neither read which SVG an Icon builds, so the slider's
+// mode-dependent surface is asserted here directly. Icon = the current
+// MODE (monitor = follow system, moon = dark, sun = light), NOT the
+// resolved theme.
+func TestThemeModeIcon(t *testing.T) {
 	for _, tc := range []struct {
-		mode, wantTooltip string
-		wantIcon          *ui.SVG
+		mode     string
+		wantIcon *ui.SVG
 	}{
-		{"auto", "Theme: follow system — click for dark", chromeIcons.monitor},
-		{"dark", "Theme: dark — click for light", chromeIcons.moon},
-		{"light", "Theme: light — click for system", chromeIcons.sun},
+		{"auto", chromeIcons.monitor},
+		{"dark", chromeIcons.moon},
+		{"light", chromeIcons.sun},
 	} {
 		withThemeMode(t, tc.mode)
 		if got := themeModeIcon(); got != tc.wantIcon {
 			t.Errorf("mode %q: icon %v, want the %q icon", tc.mode, got, tc.mode)
-		}
-		if got := themeButtonTooltip(); got != tc.wantTooltip {
-			t.Errorf("mode %q: tooltip %q, want %q", tc.mode, got, tc.wantTooltip)
 		}
 	}
 }
@@ -120,8 +108,7 @@ func TestViewMenuThemeSubmenu(t *testing.T) {
 }
 
 // TestPaletteThemeCommands checks the palette's three explicit Theme
-// commands: a "theme" query narrows to them and clicking one applies it
-// (the row's OnClick runs palRun, which runs the command).
+// commands: a "theme" query narrows to them and clicking one applies it.
 func TestPaletteThemeCommands(t *testing.T) {
 	withThemeMode(t, "auto")
 	s := chromeState(1)

@@ -632,52 +632,91 @@ func TestSidebarWithoutDoc(t *testing.T) {
 	}
 }
 
-func TestStatusBarPageInput(t *testing.T) {
+// TestGoToRow: the toolbar's page indicator opens the go-to row under
+// the toolbar; a number navigates and closes the row, garbage resets
+// without navigating, out-of-range clamps, and Esc closes. (The row
+// replaced the status bar's inline page field.)
+func TestGoToRow(t *testing.T) {
 	s := chromeState(1)
 	tab := s.Tabs[0]
-	tt := ui.NewTester(func(c *ui.Context) { statusBar(c, s) }, 700, 80)
+	tt := ui.NewTester(s.View, 900, 600)
+	pumpToPage0(t, tt)
 
-	if !tt.HasText("Page 1 of 5") {
-		t.Fatalf("status text missing; texts %q", tt.Texts())
+	// The status bar carries no page text any more; the indicator does.
+	if tt.HasText("Page 1 of 5") {
+		t.Fatalf("status bar still shows the page text; texts %q", tt.Texts())
 	}
-
-	// A valid number navigates (1-based).
-	if err := tt.Click("Go to page"); err != nil {
+	if err := tt.Click("Go to page"); err != nil { // the toolbar indicator
 		t.Fatal(err)
 	}
+	tt.Frame()
+	if !s.ShowGoTo || !tt.HasText("of 5") {
+		t.Fatalf("go-to row did not open; texts %q", tt.Texts())
+	}
+
+	// A valid number navigates (1-based) and closes the row.
 	tt.Type("3")
 	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
 	if tab.CurPage != 2 {
 		t.Fatalf("CurPage = %d, want 2", tab.CurPage)
 	}
-	if !tt.HasText("Page 3 of 5") {
-		t.Errorf("status not updated; texts %q", tt.Texts())
+	if s.ShowGoTo {
+		t.Fatal("Enter did not close the go-to row")
 	}
 
-	// Garbage resets the display without navigating.
+	// Garbage resets without navigating (the row stays for a retry).
 	if err := tt.Click("Go to page"); err != nil {
 		t.Fatal(err)
 	}
+	tt.Frame()
 	tt.Type("zz")
 	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
 	if tab.CurPage != 2 {
 		t.Fatalf("garbage input navigated to %d", tab.CurPage)
 	}
+	if !s.ShowGoTo {
+		t.Fatal("garbage closed the row; it should stay for a retry")
+	}
 
 	// Out-of-range numbers clamp.
-	if err := tt.Click("Go to page"); err != nil {
-		t.Fatal(err)
-	}
 	tt.Type("99")
 	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
 	if tab.CurPage != 4 {
 		t.Fatalf("CurPage = %d, want 4 (clamped)", tab.CurPage)
 	}
-	// The theme toggle button builds; clicking it is NOT exercised here:
-	// toggleTheme (Agent D) applies the theme through the app main loop,
-	// which headless tests do not run (it blocks there).
-	if _, ok := tt.Find("Toggle dark mode"); !ok {
-		t.Errorf("dark-mode toggle missing")
+
+	// Esc closes an open row.
+	if err := tt.Click("Go to page"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Key(0, ui.KeyEscape)
+	tt.Frame()
+	if s.ShowGoTo {
+		t.Fatal("Esc did not close the go-to row")
+	}
+}
+
+// TestStatusBarChrome: what the slimmed bottom bar still carries — the
+// fit-mode · zoom readout and the theme slider's three segments. The
+// slider's click behavior lives in theme_ui_test.go.
+func TestStatusBarChrome(t *testing.T) {
+	s := chromeState(1)
+	tt := ui.NewTester(func(c *ui.Context) { statusBar(c, s) }, 700, 80)
+
+	if !tt.HasText("Fit Width · 100%") {
+		t.Fatalf("fit/zoom readout missing; texts %q", tt.Texts())
+	}
+	for _, seg := range []string{"Theme: follow system", "Theme: light", "Theme: dark"} {
+		if _, ok := tt.Find(seg); !ok {
+			t.Errorf("theme slider segment %q missing", seg)
+		}
+	}
+	if tt.HasText("Page 1 of 5") {
+		t.Errorf("page text still in the status bar; texts %q", tt.Texts())
 	}
 }
 

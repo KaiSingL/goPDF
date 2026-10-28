@@ -62,8 +62,13 @@ func (s *AppState) View(c *ui.Context) {
 		ui.Divider(c)      // ─ under the title bar
 		tabBar(c, s)       // C: browser-style tab strip
 		ui.Divider(c)      // ─ under the tab strip
-		toolbar(c, s)      // C: back/forward, reload, search, zoom
-		ui.Divider(c)      // ─ under the toolbar
+		toolbar(c, s)      // C: back/forward, zoom, pages, search/print
+		if s.ShowGoTo {
+			gotoRow(c, s) // the "Go to page" field the page indicator opens
+			ui.Divider(c) // ─ under the go-to row
+		} else {
+			ui.Divider(c) // ─ under the toolbar
+		}
 
 		// Content: sidebar (C) beside the page area (B), which fills the
 		// rest, and — when toggled — the search results panel (D) on the
@@ -116,8 +121,21 @@ func (s *AppState) View(c *ui.Context) {
 		})
 
 		ui.Divider(c)           // ─ over the status bar
-		statusBar(c, s)         // C: page X/Y, fit mode, zoom, theme toggle
+		statusBar(c, s)         // C: fit mode, zoom, theme switch
 		paletteOverlay(c, s)    // D: Ctrl+K palette, drawn above everything
 		propertiesOverlay(c, s) // D: Document Properties dialog (File menu)
+		printAlert(c, s)        // D: a failed print names its cause
 	})
+}
+
+// printAlert surfaces a printing failure (the dialog runs on a worker
+// goroutine; errors it logs are invisible in a GUI app): an alert with
+// the message and one OK button.
+func printAlert(c *ui.Context, s *AppState) {
+	if !s.ShowPrintError {
+		return
+	}
+	if ui.AlertDialog(c, &s.ShowPrintError, "Print", s.PrintError, "OK") >= 0 {
+		s.PrintError = ""
+	}
 }

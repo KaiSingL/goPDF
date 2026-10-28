@@ -62,6 +62,11 @@ func SetWindow(w *mygo.Window) { window = w }
 // build. See the mygo-maintenance skill's FocusBind pattern.
 var SearchFocus string
 
+// GoToFocus is the focus request channel for the go-to row's field
+// (toolbar.go): ToggleGoTo fills it with a fresh token so the row opens
+// ready to type, the same pattern as SearchFocus above.
+var GoToFocus string
+
 // update runs fn on the UI thread. Safe from any goroutine. Before the
 // window exists (unit tests) fn runs inline on the calling goroutine —
 // ONLY for callers already on the main thread; workers must use

@@ -1,54 +1,27 @@
-// statusbar.go renders the bottom bar (spec §4: "Page X of Y, Fit Width /
-// Fit Page, Zoom, Dark Mode toggle, Autosaved indicator"). One of the four
-// chrome modules (Agent C).
+// statusbar.go renders the bottom bar: the fit-mode and zoom readout on
+// the left, the theme switch and the autosaved indicator on the right
+// (spec §4's "Page X of Y" moved to the toolbar — its indicator opens
+// the go-to row under the toolbar, toolbar.go).
 //
-// API notes (verified against mygo v0.6.4 source):
-//   - The page-number input is a ui.TextInput bound to a per-tab *string
-//     (bound values need storage that outlives the pass). The current page
-//     shows as the placeholder, so typing replaces it and submitting (or
-//     invalid input) resets the field to the committed page. Enter is the
-//     input's Submitted.
-//   - The theme button shows the current MODE's icon — monitor for auto
-//     (follow system), moon for dark, sun for light — under a stable
-//     accessible label, with a tooltip naming the mode and the next one;
-//     a click cycles via toggleTheme (Agent D).
+// The theme switch is a three-segment icon slider (system / light /
+// dark): a pill track whose knob slides to the chosen mode with a short
+// animation — the same idiom mygo's own Toggle paints its knob with (an
+// Animate value driving a rounded rect in Draw, under the icon children).
 package app
 
 import (
-	"fmt"
-	"strconv"
-	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 )
 
-// pageEdits holds one page-input string per tab (pruned lazily).
-var pageEdits = map[string]*string{}
-
-// pageEditFor returns the tab's page-input string, starting empty so the
-// placeholder shows the committed page. statusBar prunes closed tabs'
-// entries before building the input.
-func pageEditFor(t *Tab) *string {
-	if e := pageEdits[t.ID]; e != nil {
-		return e
-	}
-	e := new(string)
-	pageEdits[t.ID] = e
-	return e
-}
-
 // statusBar renders the bottom bar; the empty state shows the app name.
 func statusBar(c *ui.Context, s *AppState) {
 	th := c.Theme()
-	if len(pageEdits) > 64 {
-		pruneByTabID(pageEdits, s)
-	}
 	t := s.Active()
 	// One compact line: a fixed height with symmetric vertical padding
 	// (PaddingY is included in Height, border-box style) so the controls
-	// center with visible space above and below. The page input and the
-	// theme button are slimmed in kind below: mygo pads both by default to
-	// ~28+ DIPs tall, which would fill this bar edge to edge.
+	// center with visible space above and below.
 	ui.Row(c).Height(36).PaddingY(th.Space(1)).
 		PaddingX(th.Space(2)).Gap(th.Space(2)).AlignItems(ui.Center).Children(func() {
 		if t == nil {
@@ -56,77 +29,90 @@ func statusBar(c *ui.Context, s *AppState) {
 			return
 		}
 
-		ui.Textf(c, "Page %d of %d", t.CurPage+1, t.NumPages).FontSize(12)
-		pageInput(c, t)
-
 		ui.Spacer(c)
 		ui.Textf(c, "%s · %s", fitModeLabel(t.ZoomMode), t.ZoomPercent()).
 			FontSize(12).TextColor(th.TextMuted)
 
 		ui.Spacer(c)
-		// Slim vertical padding: the button's default (Space(1.5)) plus its
-		// border is taller than the bar's content box, which would sit it
-		// flush against the bar's edges. The icon follows the MODE, not
-		// the resolved theme, so the button reads as "which mode am I in";
-		// the label stays stable for accessibility and the tooltip names
-		// the mode and what a click switches to.
-		theme := ui.Button(c, "").Label("Toggle dark mode").Tooltip(themeButtonTooltip()).
-			PaddingY(th.Space(0.5))
-		theme.Children(func() {
-			ui.Icon(c, themeModeIcon()).FontSize(14)
-		})
-		theme.OnClick(toggleTheme)
+		themeSwitch(c)
 		ui.Text(c, "Saved").FontSize(12).TextColor(th.TextMuted) // settings autosave (spec §4)
 	})
 }
 
-// pageInput is the inline page-number field: submit navigates to n-1
-// (Navigate clamps); invalid input just resets the display.
-func pageInput(c *ui.Context, t *Tab) {
+// themeSwitchSeg is one segment of the theme switch.
+type themeSwitchSeg struct {
+	label string
+	mode  string
+	icon  *ui.SVG
+}
+
+// themeSegments lists the modes in slider order: follow system, light,
+// dark.
+var themeSegments = []themeSwitchSeg{
+	{"Theme: follow system", "auto", chromeIcons.monitor},
+	{"Theme: light", "light", chromeIcons.sun},
+	{"Theme: dark", "dark", chromeIcons.moon},
+}
+
+// themeSwitch is the three-mode theme slider: a pill of three icon
+// segments; a click picks that mode (SetThemeMode — the cycle is gone,
+// every mode is one visible click away), and the knob glides to it. The
+// knob paints in Draw — before the icon children, so it slides UNDER
+// them — at the Animate value's segment offset.
+func themeSwitch(c *ui.Context) {
 	th := c.Theme()
-	edit := pageEditFor(t)
-	// Slim vertical padding so the input (mygo's default is Space(1.5),
-	// ~28 DIPs tall with the border) centers in the bar with room above
-	// and below instead of filling it edge to edge.
-	in := ui.TextInput(c, edit).
-		Label("Go to page").Tooltip("Go to page").
-		Width(56).PaddingY(th.Space(0.5)).Placeholder(fmt.Sprintf("%d", t.CurPage+1)).
-		FontSize(12)
-	if in.Submitted() {
-		n, err := strconv.Atoi(strings.TrimSpace(*edit))
-		*edit = "" // reset in every case; the placeholder shows the page
-		if err == nil {
-			t.Navigate(n-1, 0)
+	const seg = 32.0 // one segment's width in DIPs (the knob's too)
+
+	cur := 0
+	mode := NormalizeThemeMode(ThemeMode)
+	for i, m := range themeSegments {
+		if m.mode == mode {
+			cur = i
 		}
 	}
+
+	e := ui.Box(c).Width(seg * float32(len(themeSegments))).Height(24).
+		Radius(12).Background(th.SurfaceHover).Clip()
+	at := e.Animate("knob", float32(cur), 160*time.Millisecond)
+	e.Draw(func(p *ui.Painter, r ui.Rect) {
+		// The knob: a full segment slice of the pill, surface-colored
+		// with a soft shadow — mygo's own switch knob idiom (widgets.go).
+		kr := ui.Rect{X: r.X + at*seg, Y: r.Y, W: seg, H: r.H}
+		p.Shadow(kr, 12, 0, 1, 3, 0, ui.RGBA(0, 0, 0, 0.25))
+		p.Fill(kr, th.Surface, 12)
+	})
+	e.Children(func() {
+		ui.Row(c).Fill().Children(func() {
+			for _, m := range themeSegments {
+				b := ui.ButtonBase(c).Label(m.label).Tooltip(m.label).
+					Grow(1).Cursor(ui.CursorPointer)
+				chosen := m.mode == mode
+				b.Children(func() {
+					icon := ui.Icon(c, m.icon).FontSize(14)
+					if !chosen {
+						icon.TextColor(th.TextMuted)
+					}
+				})
+				// The click captures mode for the closure.
+				mode := m.mode
+				b.OnClick(func() { SetThemeMode(mode) })
+			}
+		})
+	})
 }
 
 // themeModeIcon returns the current MODE's icon (not the resolved
-// theme's, as the old moon-in-light/sun-in-dark pair did): monitor for
-// auto — follow system —, moon for dark, sun for light. theme_ui_test.go
-// asserts the mapping, since the Tester can neither read icons nor
-// tooltips.
+// theme's): monitor for auto — follow system —, sun for light, moon for
+// dark. theme_ui_test.go asserts the mapping, since the Tester can
+// neither read icons nor tooltips.
 func themeModeIcon() *ui.SVG {
-	switch ThemeMode {
+	switch NormalizeThemeMode(ThemeMode) {
 	case "dark":
 		return chromeIcons.moon
 	case "light":
 		return chromeIcons.sun
 	default:
 		return chromeIcons.monitor
-	}
-}
-
-// themeButtonTooltip names the current mode and what a click switches to
-// (the toggleTheme cycle auto → dark → light → auto).
-func themeButtonTooltip() string {
-	switch ThemeMode {
-	case "dark":
-		return "Theme: dark — click for light"
-	case "light":
-		return "Theme: light — click for system"
-	default:
-		return "Theme: follow system — click for dark"
 	}
 }
 

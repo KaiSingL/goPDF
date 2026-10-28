@@ -102,6 +102,8 @@ func shortcuts(c *ui.Context, s *AppState) {
 			s.ShowPalette = false
 		case s.ShowSearchPanel:
 			s.ShowSearchPanel = false
+		case s.ShowGoTo:
+			s.ShowGoTo = false
 		default:
 			if t := s.Active(); t != nil && t.Sel.Active {
 				t.ClearSelection()
@@ -197,7 +199,8 @@ func OpenFilePicker() { openFilePicker() }
 
 // PrintActive prints the active tab's document: the dialog blocks, so it
 // runs off the UI thread (internal/print guards reentry itself). No tab
-// or a launcher tab is a no-op.
+// or a launcher tab is a no-op. A failure the old path only logged —
+// invisible in a GUI app — now opens an alert naming the cause.
 func PrintActive() {
 	update(func() {
 		if current == nil {
@@ -211,6 +214,12 @@ func PrintActive() {
 		go func() {
 			if _, err := gopdfprint.Print(doc, name); err != nil {
 				log.Printf("gopdf: print: %v", err)
+				update(func() {
+					if current != nil {
+						current.PrintError = err.Error()
+						current.ShowPrintError = true
+					}
+				})
 			}
 		}()
 	})
