@@ -48,8 +48,10 @@ func titleBarView(c *ui.Context, s *AppState) {
 	// height mygo documents for windows that report no band (headless
 	// tests, full screen): keep a usable bar there too.
 	bar := c.TitleBar()
+	// Left inset: bar.Left (macOS traffic lights) or a comfortable edge
+	// margin — Windows reports 0 there and the icon would hug the edge.
 	ui.Row(c).Height(max(bar.Height, 32)).
-		Padding(0, bar.Right, 0, bar.Left).
+		Padding(0, bar.Right, 0, max(bar.Left, 10)).
 		Gap(th.Space(2)).AlignItems(ui.Center).DragWindow().
 		Children(func() {
 			if appIcon != nil {
