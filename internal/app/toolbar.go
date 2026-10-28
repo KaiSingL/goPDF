@@ -1,8 +1,15 @@
-// toolbar.go renders the second bar (spec §4 update: "back/forward per tab,
-// reload, search toggle, zoom - / 100% / +, share, comment (disabled v1),
-// more menu"; the search input itself moved into the right-side results
-// panel, searchpanel.go, and reload moved into the more menu as its first
-// item). One of the four chrome modules (Agent C).
+// toolbar.go renders the second bar in four sections, separated by thin
+// dividers (user-requested layout):
+//
+//	[sidebar | back | forward] │ [zoom − 100% + | fit segmented] │
+//	[prev page | n / N | next page] ⟨spacer⟩ [search | share | comment | more]
+//
+// The search button sits flush RIGHT (it moved from the left group), and
+// the page section is new: page-turn buttons beside a "current / total"
+// indicator. ui.Divider is vertical inside a Row and, being a plain box,
+// is invisible to the Toolbar's overflow accounting (only clickable and
+// menu children register as toolbarItems), so the dividers and the inert
+// page indicator never corrupt the end-of-bar overflow menu.
 //
 // API notes (verified against mygo v0.6.4 source):
 //   - ui.Toolbar lays its controls out flat-until-hovered, moves overflow
@@ -12,7 +19,11 @@
 //     directly to the model (bound values before OnClick — skill rule).
 package app
 
-import "github.com/egoist/mygo/ui"
+import (
+	"fmt"
+
+	"github.com/egoist/mygo/ui"
+)
 
 // toolbar renders the second bar for the active tab; it shows nothing
 // without a tab.
@@ -21,8 +32,10 @@ func toolbar(c *ui.Context, s *AppState) {
 	if t == nil {
 		return
 	}
+	th := c.Theme()
 	ui.Toolbar(c, func() {
-		// Leftmost: the sidebar toggle, icon-only (spec §4 update).
+		// Section 1 — document navigation: the sidebar toggle (spec §4
+		// update) and the per-tab history.
 		panel := ui.Button(c, "").Label("Toggle sidebar").Tooltip("Toggle sidebar")
 		panel.Children(func() { ui.Icon(c, chromeIcons.panel).FontSize(16) })
 		panel.OnClick(func() { s.ToggleSidebar() })
@@ -37,19 +50,11 @@ func toolbar(c *ui.Context, s *AppState) {
 		fwd.Children(func() { ui.Icon(c, chromeIcons.forward).FontSize(16) })
 		fwd.OnClick(func() { t.Forward() })
 
-		// Search toggles the right-side results panel (searchpanel.go);
-		// the field itself lives there now.
-		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
-		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })
-		search.OnClick(func() { s.ShowSearchPanel = !s.ShowSearchPanel })
+		ui.Divider(c)
 
-		// The spacer absorbs the leftover width, keeping the zoom, fit and
-		// overflow controls flush right instead of everything piling onto
-		// the left (ui.Spacer is ui.Toolbar's own mechanism for this).
-		ui.Spacer(c)
-
-		// Zoom controls (spec §5: 25%–400%, stepping by ZoomStep). The
-		// percent button resets to 100% (t.SetZoom(1)).
+		// Section 2 — zoom (spec §5: 25%–400%, stepping by ZoomStep). The
+		// percent button resets to 100% (t.SetZoom(1)); the label is the
+		// capped, on-screen zoom (Tab.ZoomPercent).
 		zout := ui.Button(c, "−").Label("Zoom out").Tooltip("Zoom out")
 		zout.OnClick(t.ZoomOut)
 
@@ -62,7 +67,37 @@ func toolbar(c *ui.Context, s *AppState) {
 		// Fit mode (spec §4). The bound write applies ZoomMode directly.
 		ui.Segmented(c, (*int)(&t.ZoomMode), "Fit Width", "Fit Page", "Custom")
 
-		// v1 non-goals (spec §2): share and comments stay disabled.
+		ui.Divider(c)
+
+		// Section 3 — pages: page-turn buttons (the shortcuts.go helpers
+		// behind Page Up/Page Down and the arrow keys) around a
+		// "current / total" indicator. Inert text: the toolbar's overflow
+		// walk only registers clickable children.
+		prev := ui.Button(c, "").Label("Previous page").Tooltip("Previous page (Page Up)").
+			Disabled(t.CurPage <= 0)
+		prev.Children(func() { ui.Icon(c, chromeIcons.chevLeft).FontSize(16) })
+		prev.OnClick(prevPage(s))
+
+		ui.Text(c, fmt.Sprintf("%d / %d", t.CurPage+1, t.NumPages)).
+			FontSize(12).TextColor(th.TextMuted)
+
+		next := ui.Button(c, "").Label("Next page").Tooltip("Next page (Page Down)").
+			Disabled(t.CurPage >= t.NumPages-1)
+		next.Children(func() { ui.Icon(c, chromeIcons.chevRight).FontSize(16) })
+		next.OnClick(nextPage(s))
+
+		// The spacer absorbs the leftover width, keeping the right section
+		// flush right instead of everything piling onto the left (ui.Spacer
+		// is ui.Toolbar's own mechanism for this).
+		ui.Spacer(c)
+
+		// Section 4 — flush right: search (moved here from the left group;
+		// it toggles the right-side results panel, searchpanel.go), the v1
+		// non-goals (spec §2) and the more menu.
+		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
+		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })
+		search.OnClick(func() { s.ShowSearchPanel = !s.ShowSearchPanel })
+
 		share := ui.Button(c, "").Label("Share").Disabled(true).Tooltip("Sharing is not available in this version")
 		share.Children(func() { ui.Icon(c, chromeIcons.share).FontSize(16) })
 		comment := ui.Button(c, "").Label("Comment").Disabled(true).Tooltip("Comments are not available in this version")
