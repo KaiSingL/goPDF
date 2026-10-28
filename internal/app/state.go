@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"gopdf/internal/pdf"
@@ -54,6 +55,12 @@ type SearchState struct {
 	Running bool // index build or search in flight
 	Hits    []pdf.SearchHit
 	Current int // index into Hits; -1 when no hit selected
+
+	// QuadsByHit holds EXACT hit rectangles from MuPDF's own search
+	// (fz_search quads), keyed by index into Hits, populated async after
+	// Hits land. Until then the viewer falls back to the estimated span
+	// rectangles. UI-thread only.
+	QuadsByHit map[int][]pdf.HitRect
 }
 
 // HistoryEntry is one back/forward navigation stop.
@@ -446,11 +453,83 @@ func (s *AppState) RunSearch(t *Tab) {
 			cur.Search.Hits = hits
 			cur.Search.Running = false
 			cur.Search.Current = -1
+			cur.Search.QuadsByHit = nil
+			if len(hits) > 0 {
+				cur.Search.QuadsByHit = map[int][]pdf.HitRect{}
+				fetchQuads(cur, hits)
+			}
 			if page, _, ok := cur.GotoHit(1); ok { // land on the first hit
 				cur.Navigate(page, 0)
 			}
 		})
 	})
+}
+
+// quadsDelivery is one exact-hit-rects result waiting to land on its tab.
+type quadsDelivery struct {
+	tabID  string
+	query  string
+	hitIdx int
+	rects  []pdf.HitRect
+}
+
+// quadsMailbox hands search-quad results from doc workers to the UI
+// thread: workers append (mutex), the next build drains. In tests the
+// Tester's Frame is that build; in production the completion's
+// window.Invalidate asks for it.
+var (
+	quadsMu      sync.Mutex
+	quadsMailbox []quadsDelivery
+)
+
+// drainQuads lands pending quad deliveries on their tabs. UI thread only
+// (called at the top of every build).
+func drainQuads(s *AppState) {
+	quadsMu.Lock()
+	pending := quadsMailbox
+	quadsMailbox = nil
+	quadsMu.Unlock()
+	for _, d := range pending {
+		for _, t := range s.Tabs {
+			if t.ID != d.tabID || t.Search.Query != d.query || t.Search.QuadsByHit == nil {
+				continue
+			}
+			t.Search.QuadsByHit[d.hitIdx] = d.rects
+		}
+	}
+}
+
+// fetchQuads asks MuPDF for the exact rectangles of every hit, one page at
+// a time (fz_search quads, ~ms per page), and distributes them onto the
+// hit indices of that page in reading order — the same order both
+// searches walk. Results go through quadsMailbox; the worker touches no
+// AppState (update() runs inline on workers in tests).
+func fetchQuads(t *Tab, hits []pdf.SearchHit) {
+	q := t.Search.Query
+	byPage := map[int][]int{} // page → hit indices, in order
+	for hi, h := range hits {
+		byPage[h.Page] = append(byPage[h.Page], hi)
+	}
+	for page, his := range byPage {
+		page, his := page, his
+		t.Doc.SearchQuadsAsync(page, q, func(rects []pdf.HitRect, err error) {
+			if err != nil || len(rects) == 0 {
+				return
+			}
+			for i, hi := range his {
+				var r []pdf.HitRect
+				if i < len(rects) {
+					r = rects[i : i+1]
+				}
+				quadsMu.Lock()
+				quadsMailbox = append(quadsMailbox, quadsDelivery{tabID: t.ID, query: q, hitIdx: hi, rects: r})
+				quadsMu.Unlock()
+			}
+			if window != nil {
+				window.Invalidate() // the next build drains the mailbox
+			}
+		})
+	}
 }
 
 // StepSearch moves to the next (+1) or previous (-1) hit and navigates the
@@ -495,6 +574,7 @@ func (t *Tab) StartSearch(q string) {
 	t.Search.Running = q != ""
 	t.Search.Current = -1
 	t.Search.Hits = nil
+	t.Search.QuadsByHit = nil
 }
 
 // GotoHit moves the current hit by delta (±1) wrapping around the results

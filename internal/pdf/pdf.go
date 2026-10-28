@@ -200,6 +200,41 @@ func (d *Doc) loop(fit *fitz.Document) {
 	}
 }
 
+// HitRect is one exact search-hit rectangle in page space (PDF points,
+// top-left origin), from MuPDF's own search — unlike TextSpan rectangles,
+// whose widths the HTML text extraction only estimates.
+type HitRect struct{ X0, Y0, X1, Y1 float64 }
+
+// SearchQuadsAsync returns the exact hit rectangles of needle on one page
+// through MuPDF's fz_search (case-insensitive, up to 64 per page) on the
+// doc worker; fn runs on that goroutine. Used for painting highlights.
+func (d *Doc) SearchQuadsAsync(page int, needle string, fn func([]HitRect, error)) {
+	if d.closed.Load() || fn == nil {
+		return
+	}
+	if page < 0 || page >= d.pages || needle == "" {
+		if fn != nil {
+			go fn(nil, ErrBadPage)
+		}
+		return
+	}
+	d.hi <- func(f *fitz.Document) { // interactive: ahead of thumbnails
+		if d.closed.Load() {
+			return
+		}
+		quads, err := f.SearchPage(page, needle)
+		if err != nil {
+			fn(nil, err)
+			return
+		}
+		out := make([]HitRect, len(quads))
+		for i, q := range quads {
+			out[i] = HitRect{X0: q.X0, Y0: q.Y0, X1: q.X1, Y1: q.Y1}
+		}
+		fn(out, nil)
+	}
+}
+
 // Path returns the absolute path the document was opened from.
 func (d *Doc) Path() string { return d.path }
 

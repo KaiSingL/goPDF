@@ -76,6 +76,20 @@ int run_page_full(fz_context *ctx, fz_page *page, fz_device *dev, fz_matrix tran
 	return 1;
 }
 
+// GoPDF patch: exact search hit quads (fz_search_page), so highlights land
+// on the matched glyphs instead of estimated rectangles.
+int search_page(fz_context *ctx, fz_page *page, const char *needle, fz_quad *quads, int hit_max) {
+	int n = 0;
+	fz_try(ctx) {
+		n = fz_search_page(ctx, page, needle, NULL, quads, hit_max);
+	}
+	fz_catch(ctx) {
+		return -1;
+	}
+
+	return n;
+}
+
 static void silent_warning(void *user, const char *message) {}
 
 void silence_warnings(fz_context *ctx) {
@@ -138,6 +152,7 @@ import "C"
 import (
 	"image"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -358,6 +373,56 @@ func (f *Document) ImageDPI(pageNumber int, dpi float64) (*image.RGBA, error) {
 	copy(img.Pix, C.GoBytes(unsafe.Pointer(pixels), C.int(4*bbox.x1*bbox.y1)))
 
 	return img, nil
+}
+
+// SearchQuad is the bounding box of one search hit, in page-space PDF
+// points with a top-left origin (as fz pages bound). (GoPDF fork.)
+type SearchQuad struct {
+	X0, Y0, X1, Y1 float64
+}
+
+// searchHitMax caps fz_search_page's quad buffer per page.
+const searchHitMax = 64
+
+// SearchPage returns the quads of every occurrence of needle on the page
+// (up to 64): exact geometry around the matched glyphs, unlike the span
+// rectangles the HTML text extraction estimates. Case-insensitive, as
+// fz_search is. Serialized with the other Document calls on the internal
+// mutex. (GoPDF fork.)
+func (f *Document) SearchPage(pageNumber int, needle string) ([]SearchQuad, error) {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	if pageNumber >= f.NumPage() {
+		return nil, ErrPageMissing
+	}
+
+	page := C.load_page(f.ctx, f.doc, C.int(pageNumber))
+	if page == nil {
+		return nil, ErrLoadPage
+	}
+
+	defer C.fz_drop_page(f.ctx, page)
+
+	cneedle := C.CString(needle)
+	defer C.free(unsafe.Pointer(cneedle))
+
+	var quads [searchHitMax]C.fz_quad
+	n := int(C.search_page(f.ctx, page, cneedle, &quads[0], searchHitMax))
+	if n < 0 {
+		return nil, ErrRunPageContents
+	}
+
+	out := make([]SearchQuad, 0, n)
+	for i := 0; i < n; i++ {
+		q := quads[i]
+		x0 := math.Min(math.Min(float64(q.ul.x), float64(q.ur.x)), math.Min(float64(q.ll.x), float64(q.lr.x)))
+		x1 := math.Max(math.Max(float64(q.ul.x), float64(q.ur.x)), math.Max(float64(q.ll.x), float64(q.lr.x)))
+		y0 := math.Min(math.Min(float64(q.ul.y), float64(q.ur.y)), math.Min(float64(q.ll.y), float64(q.lr.y)))
+		y1 := math.Max(math.Max(float64(q.ul.y), float64(q.ur.y)), math.Max(float64(q.ll.y), float64(q.lr.y)))
+		out = append(out, SearchQuad{X0: x0, Y0: y0, X1: x1, Y1: y1})
+	}
+	return out, nil
 }
 
 // ImagePNG returns image for given page number as PNG bytes.

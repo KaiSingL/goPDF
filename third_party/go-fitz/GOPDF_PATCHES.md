@@ -11,3 +11,5 @@ directive in the root go.mod. License: AGPL-3.0 (see COPYING), as upstream.
    of `run_page_contents`, so PDF annotations (highlights, squares, notes'
    appearance streams) appear in rendered pages. The stext/SVG paths
    (Text/HTML/SVG) still run contents only.
+
+2. **Exact search quads** — `fitz_cgo.go`: new C helper `search_page` wrapping `fz_search_page`, and `Document.SearchPage(pageNumber, needle) ([]SearchQuad, error)` returning per-hit bounding boxes in page points. goPDF uses these to highlight matched text precisely (the HTML text extraction has no span widths).

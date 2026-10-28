@@ -817,11 +817,26 @@ func hitRects(t *Tab, page int, z float64) []hitRect {
 			continue
 		}
 		cur := hi == t.Search.Current
+		if rects := t.Search.QuadsByHit[hi]; len(rects) > 0 {
+			// Exact geometry from MuPDF's own search — the estimated
+			// spans below are the fallback until the quads land.
+			for _, r := range rects {
+				out = append(out, hitRect{rect: quadDipRect(t, page, r, k), current: cur})
+			}
+			continue
+		}
 		for _, sp := range h.Spans {
 			out = append(out, hitRect{rect: spanDipRect(t, page, sp, k), current: cur})
 		}
 	}
 	return out
+}
+
+// quadDipRect maps an exact hit rectangle (points on the unrotated page,
+// top-left origin) through the view rotation, as spanDipRect does.
+func quadDipRect(t *Tab, page int, r pdf.HitRect, k float64) [4]float32 {
+	w, h := r.X1-r.X0, r.Y1-r.Y0
+	return spanDipRect(t, page, pdf.TextSpan{X: r.X0, Y: r.Y0, W: w, H: h}, k)
 }
 
 // spanDipRect maps a text span (points on the unrotated page, origin top
