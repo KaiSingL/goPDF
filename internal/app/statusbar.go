@@ -29,6 +29,10 @@ func statusBar(c *ui.Context, s *AppState) {
 			return
 		}
 
+		if debugOn { // debugviewer.go: the frame counter, for capture correlation
+			ui.Textf(c, "f%d", debugFrame.Load()).FontSize(11).TextColor(th.TextMuted)
+		}
+
 		ui.Spacer(c)
 		ui.Textf(c, "%s · %s", fitModeLabel(t.ZoomMode), t.ZoomPercent()).
 			FontSize(12).TextColor(th.TextMuted)

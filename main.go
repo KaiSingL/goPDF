@@ -130,6 +130,18 @@ func main() {
 		app.Update(func() {
 			app.SeedRecents(state, mygo.App.RecentDocuments())
 		})
+
+		// GPU scroll-bleed reproduction harness (internal/app/
+		// scrolltest.go): GOPDF_SCROLLTEST=<dir> runs a scripted jump
+		// sequence over a generated document and saves window captures
+		// per step, then quits. Debug-only; never set in normal use.
+		// GOPDF_DEBUG_VIEWER=1 enables just the overlay/ring/hotkey for
+		// manual reproduction.
+		if dir := os.Getenv("GOPDF_SCROLLTEST"); dir != "" {
+			app.DebugScrollCapture(dir)
+		} else if os.Getenv("GOPDF_DEBUG_VIEWER") != "" {
+			app.EnableViewerDebug()
+		}
 	})
 
 	if err := mygo.App.Run(); err != nil {

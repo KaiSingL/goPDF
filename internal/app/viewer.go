@@ -52,6 +52,7 @@ const (
 	pageRadius   float32 = 6
 	zoomDebounce         = 150 * time.Millisecond // re-render delay after zooming
 	bitmapCap            = 48                     // bitmaps kept across all tabs
+	jumpGlideMax         = 2                      // jumps past this many pages snap instead of gliding
 	// dipPerPt is DIPs per point at 100% zoom, as Tab.FitZoom computes it.
 	dipPerPt = 96.0 / 72.0
 )
@@ -142,6 +143,26 @@ var (
 func viewer(c *ui.Context, s *AppState) {
 	t := s.Active()
 	pruneViewerState(s)
+	if debugOn {
+		frame := debugFrame.Add(1)
+		debugLogf("frame %d: Y=%.0f maxY=%.0f cur=%d seen=%d tab=%s",
+			frame, viewerScroll.Y, viewerScroll.MaxY, func() int {
+				if t != nil {
+					return t.CurPage
+				}
+				return -1
+			}(), func() int {
+				if t != nil {
+					return viewerStateFor(t.ID).seenPage
+				}
+				return -2
+			}(), func() string {
+				if t != nil {
+					return t.ID
+				}
+				return "-"
+			}())
+	}
 	if t == nil || t.Doc == nil || t.NumPages <= 0 {
 		viewerEmpty(c, s, t)
 		return
@@ -193,12 +214,29 @@ func viewer(c *ui.Context, s *AppState) {
 	if a := st.anchor; a != nil { // zoom gesture: keep the pointer's content in place
 		st.anchor = nil
 		if a.page >= 0 && a.page < len(g.boxes) {
-			viewerScroll.Y = max(0, g.boxes[a.page].top+a.local*a.ratio-a.anchorY)
+			// snapScrollTo, not a direct Y write - the container applies
+			// the offset through its own glide machinery (see the snap).
+			snapScrollTo(max(0, g.boxes[a.page].top+a.local*a.ratio-a.anchorY))
 		}
 	}
-	if st.seenPage != t.CurPage { // someone else jumped: glide to the page top
+	if st.seenPage != t.CurPage { // someone else jumped
+		prev := st.seenPage
 		st.seenPage = t.CurPage
-		viewerScroll.ScrollTo(0, g.boxes[t.CurPage].top-pagePadY, ui.Smooth)
+		y := max(float32(0), g.boxes[t.CurPage].top-pagePadY)
+		// Far jumps snap — the page you asked for is the page you see,
+		// with no glide lagging the chrome behind. Neighboring pages
+		// (next/prev, small thumbnail hops) keep the short glide.
+		// ScrollTo (not a direct Y write): the container applies the
+		// offset through its own glide machinery — and snapScrollTo
+		// keeps frames coming until it has, because a scroll whose
+		// animation outlives the jump's only frame freezes mid-way once
+		// the app goes idle: the previous page's pixels under the new
+		// chrome, indefinitely.
+		if prev < 0 || t.CurPage-prev > jumpGlideMax || prev-t.CurPage > jumpGlideMax {
+			snapScrollTo(y)
+		} else {
+			viewerScroll.ScrollTo(0, y, ui.Smooth)
+		}
 	} else if !viewerScroll.Scrolling() { // else: follow the user's scrolling
 		if mv := mostVisible(g, viewerScroll.Y, float32(viewH)); mv != t.CurPage {
 			t.SetCurrentPage(mv) // silent, no history
@@ -226,10 +264,19 @@ func viewer(c *ui.Context, s *AppState) {
 				AlignItems(ui.Center).Shrink(0).
 				Children(func() {
 					ui.Box(c).Height(topSpacer).Shrink(0)
-					// Build outward from the current page so its render is
-					// requested FIRST on jumps — the visible page is what the
-					// user is waiting for, not its neighbors.
+					// Render PRIORITY in center-out order — on a jump
+					// the visible page's render is requested first
+					// (pageBitmap is idempotent and inflight-guarded,
+					// so the loop below never double-renders). But
+					// BUILD in ascending page order: a Column stacks
+					// children in build order, so building in
+					// center-out order painted each box at another
+					// page's offset — page N-1's content filling the
+					// viewport under page N's chrome on every recenter.
 					for _, i := range centerOut(lo, hi, t.CurPage) {
+						pageBitmap(t, i, renderZ, z)
+					}
+					for i := lo; i <= hi; i++ {
 						buildPage(c, s, t, i, g.boxes[i], g, renderZ, z)
 					}
 					ui.Box(c).Height(botSpacer).Shrink(0)
@@ -431,6 +478,12 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 	}
 
 	bm := pageBitmap(t, i, renderZ, z)
+	label := ""
+	if debugOn {
+		label = fmt.Sprintf("p%d bm#%s cur=%d", i+1, debugBMID(bm), t.CurPage+1)
+		debugLogf("frame %d: build p%d box %.0fx%.0f bm#%s",
+			debugFrame.Load(), i+1, box.w, box.h, debugBMID(bm))
+	}
 	e.Children(func() {
 		if bm != nil {
 			// The bitmap is the settled render at another size while
@@ -442,8 +495,11 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 			ui.Textf(c, "Page %d", i+1).TextColor(c.Theme().TextMuted)
 		})
 	})
-	if len(hits) > 0 || len(selRects) > 0 {
+	if len(hits) > 0 || len(selRects) > 0 || label != "" {
 		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
+			if debugOn {
+				debugSetRect(i, r) // scrolltest crops captures to this
+			}
 			for _, h := range hits {
 				col := otherCol
 				if h.current {
@@ -466,7 +522,30 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 					H: rc[3],
 				}, selCol, 2)
 			}
+			// The debug label: which page and which bitmap id this box
+			// was BOUND to - a capture is then self-describing. The
+			// label is drawn at 45% alpha: readable in a capture, but
+			// above the scrolltest matcher's ink threshold, so its
+			// white-gapped extent cannot drag the digit's ink bounding
+			// box and skew the shape match.
+			if label != "" {
+				p.Text(r.X+8, r.Y+20, label, 13, c.Theme().Text.Alpha(0.45))
+			}
 		})
+	}
+}
+
+// snapScrollTo scrolls immediately and keeps frames coming until the
+// container has applied the offset: a jump issued from a build has no
+// animation frames of its own, and an app that goes idle after the jump's
+// frame would otherwise keep painting the old scroll offset — the
+// previous page under the new chrome.
+func snapScrollTo(y float32) {
+	viewerScroll.ScrollTo(0, y, ui.Animation{Duration: time.Millisecond})
+	if window != nil {
+		for i := 0; i < 3; i++ {
+			window.Invalidate()
+		}
 	}
 }
 
@@ -497,6 +576,11 @@ func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
 	return false
 }
 
+// debugViewer enables per-page bitmap tracing (page → image/bitmap
+// pointers) for the scrolltest harness: it correlates which buffer a
+// page box actually displayed.
+var debugViewer bool
+
 // pageBitmap returns the bitmap to show for page i: the render at the
 // wanted DPI when it is in the tab's PageCache (converting it once), or a
 // request for it. While the wanted render is on its way — or while the
@@ -509,6 +593,9 @@ func pageBitmap(t *Tab, i int, renderZ, z float64) *ui.Bitmap {
 	e := bmpCache[k]
 	viewerMu.Unlock()
 	if e != nil && e.dpi == dpi {
+		if debugOn {
+			debugLogf("pagebitmap: p%d CACHE bm#%s", i+1, debugBMID(e.bm))
+		}
 		return e.bm
 	}
 	if renderZ == z { // settled: the wanted render is worth having now
@@ -518,6 +605,9 @@ func pageBitmap(t *Tab, i int, renderZ, z float64) *ui.Bitmap {
 			viewerMu.Lock()
 			bmpPut(k, bm, dpi)
 			viewerMu.Unlock()
+			if debugOn {
+				debugLogf("pagebitmap: p%d CACHED-IMG img=%p bm#%s", i+1, img, debugBMID(bm))
+			}
 			return bm
 		}
 		ik := inflightKey{t.ID, key}
@@ -541,6 +631,10 @@ func pageBitmap(t *Tab, i int, renderZ, z float64) *ui.Bitmap {
 					viewerMu.Lock()
 					bmpPut(k, bm, key.DPI)
 					viewerMu.Unlock()
+					if debugOn {
+						debugLogf("pagebitmap: p%d RENDERED img=%p bm#%s dpi=%d",
+							i+1, img, debugBMID(bm), key.DPI)
+					}
 					t.Cache.Put(key, img) // thread-safe; also the completion signal
 					if window != nil {
 						window.Invalidate() // safe from any goroutine

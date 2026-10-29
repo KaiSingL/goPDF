@@ -71,6 +71,12 @@ func shortcuts(c *ui.Context, s *AppState) {
 		}
 	})
 
+	// Debug mode (debugviewer.go): Ctrl+Shift+D dumps the event ring and
+	// a window capture — press it at the moment a rendering bug shows.
+	if debugOn {
+		c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyD, func() { DebugDumpViewer() })
+	}
+
 	// Page turns and jumps. Left/Right turn pages too: focused text inputs
 	// take the arrows first for the caret and focused tree items to
 	// open/close (editor.wants / arrows() in the pinned source), so these
