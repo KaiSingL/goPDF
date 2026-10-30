@@ -51,11 +51,16 @@ const (
 	maxPageW     float32 = 900.0 // widest a page shows (spec §4)
 	pageRadius   float32 = 6
 	zoomDebounce         = 150 * time.Millisecond // re-render delay after zooming
-	bitmapCap            = 48                     // bitmaps kept across all tabs
 	jumpGlideMax         = 2                      // jumps past this many pages snap instead of gliding
 	// dipPerPt is DIPs per point at 100% zoom, as Tab.FitZoom computes it.
 	dipPerPt = 96.0 / 72.0
 )
+
+// bmpBudget bounds the page-bitmap cache by pixel bytes, not entry count:
+// every entry pins a full page render's pixels (ui.Bitmap zero-copies the
+// RGBA), so a count cap let off-screen pages pin hundreds of MB past the
+// PageCache's byte budget. A var so tests can shrink it.
+var bmpBudget = int64(64 << 20)
 
 var (
 	pageWhite  = ui.RGBA(255, 255, 255, 1) // pages stay white in dark mode (spec §4)
@@ -71,10 +76,13 @@ type bmpKey struct {
 	page, rotate int
 }
 
-// bmpEntry is a cached display bitmap and the DPI of its render.
+// bmpEntry is a cached display bitmap, the DPI of its render and its
+// pixel byte cost (the base image; page bitmaps draw at natural size, so
+// mygo's mipmap levels — +⅓ when minified — never materialize for them).
 type bmpEntry struct {
-	bm  *ui.Bitmap
-	dpi int
+	bm   *ui.Bitmap
+	dpi  int
+	size int64
 }
 
 // inflightKey guards against double-requesting one render.
@@ -122,7 +130,8 @@ var (
 	viewerMu     sync.Mutex
 	viewerStates = map[string]*tabViewState{}
 	bmpCache     = map[bmpKey]*bmpEntry{}
-	bmpOrder     []bmpKey // eviction order for bmpCache
+	bmpOrder     []bmpKey // eviction order for bmpCache (oldest first)
+	bmpBytes     int64    // pixel bytes held by bmpCache, under viewerMu
 	inflight     = map[inflightKey]bool{}
 	viewerGen    = map[string]int{} // mirror of Tab.ReloadGen, readable by workers
 
@@ -352,78 +361,6 @@ func recentCard(c *ui.Context, th *ui.Theme, path string) {
 	card.OnClick(func() { OpenPath(path) })
 }
 
-// recentThumbFor returns the cached first-page thumbnail of a recent
-// document, kicking an on-demand render through a transient pdf.Doc the
-// first time it is asked for. Nothing here touches AppState; the callback
-// stores goroutine-safe bits only.
-var (
-	recentMu       sync.Mutex
-	recentThumbs   = map[string]*ui.Bitmap{} // path → thumb; nil entry = tried and failed
-	recentOrder    []string                  // insertion order, for the recentThumbCap
-	recentInflight = map[string]bool{}
-)
-
-// recentThumbCap bounds the thumbnail cache so a long session browsing
-// many recents cannot grow it without end (24 thumbnails at ThumbDPI are
-// a few MB at most).
-const recentThumbCap = 24
-
-// recentThumbPut stores the thumbnail under path, evicting the oldest
-// entries past recentThumbCap in FIFO order (like thumbOrder). The caller
-// holds recentMu. Failures are cached as nil, exactly like successes, so
-// a broken PDF is not retried every build.
-func recentThumbPut(path string, bm *ui.Bitmap) {
-	if _, ok := recentThumbs[path]; !ok {
-		recentOrder = append(recentOrder, path)
-	}
-	recentThumbs[path] = bm
-	for len(recentOrder) > recentThumbCap {
-		delete(recentThumbs, recentOrder[0])
-		recentOrder = recentOrder[1:]
-	}
-}
-
-func recentThumbFor(path string) *ui.Bitmap {
-	recentMu.Lock()
-	bm, done := recentThumbs[path]
-	busy := recentInflight[path]
-	recentMu.Unlock()
-	if done || busy {
-		return bm
-	}
-	recentMu.Lock()
-	recentInflight[path] = true
-	recentMu.Unlock()
-	go func() {
-		doc, err := pdf.Open(path)
-		if err != nil {
-			recentMu.Lock()
-			recentThumbPut(path, nil)
-			delete(recentInflight, path)
-			recentMu.Unlock()
-			return
-		}
-		doc.RenderAsync(pdf.RenderReq{Page: 0, DPI: pdf.ThumbDPI, Kind: pdf.KindThumb},
-			func(img *image.RGBA, err error) {
-				var out *ui.Bitmap
-				if err == nil && img != nil {
-					out = ui.NewBitmap(img)
-				}
-				recentMu.Lock()
-				recentThumbPut(path, out)
-				delete(recentInflight, path)
-				recentMu.Unlock()
-				if window != nil {
-					window.Invalidate()
-				}
-				// Close off the worker itself: Close waits for the worker
-				// to drain, which cannot happen from inside a task.
-				go doc.Close()
-			})
-	}()
-	return nil
-}
-
 // openDropped opens the first dropped PDF in a new tab. Launcher tabs are
 // closed by OpenTab itself, so a drop on a New Tab page replaces it.
 func openDropped(s *AppState, paths []string) {
@@ -635,6 +572,11 @@ func pageBitmap(t *Tab, i int, renderZ, z float64) *ui.Bitmap {
 						debugLogf("pagebitmap: p%d RENDERED img=%p bm#%s dpi=%d",
 							i+1, img, debugBMID(bm), key.DPI)
 					}
+					// Keep room around the renders the user is actually
+					// viewing: a max-zoom letter page (~134MB) must not
+					// fall out of the cache the moment it lands. Only
+					// raises; ordinary zooms stay at the default budget.
+					t.Cache.EnsureMax(min(2*int64(len(img.Pix)), maxCacheBytes))
 					t.Cache.Put(key, img) // thread-safe; also the completion signal
 					if window != nil {
 						window.Invalidate() // safe from any goroutine
@@ -852,6 +794,9 @@ func armZoomDebounce(tabID string, st *tabViewState) {
 		if window != nil {
 			window.Invalidate()
 		}
+		// The settled re-render retires the old-DPI bitmaps and their
+		// pixel buffers; ask for the OS hand-back (debounced).
+		notifyRelease()
 	})
 	st.timer = tm
 }
@@ -915,13 +860,21 @@ func genFor(tabID string) int {
 }
 
 // bmpPut stores bm under k at the given render DPI, evicting the oldest
-// entries past bitmapCap. The caller holds viewerMu.
+// entries past bmpBudget. A refreshed key moves to the back of the
+// eviction order (LRU). The caller holds viewerMu.
 func bmpPut(k bmpKey, bm *ui.Bitmap, dpi int) {
-	if _, ok := bmpCache[k]; !ok {
-		bmpOrder = append(bmpOrder, k)
+	w, h := bm.Size()
+	size := int64(w) * int64(h) * 4
+	if _, ok := bmpCache[k]; ok { // refresh: newest position, new pixels
+		bmpDelete(k) // subtracts the replaced entry's bytes
 	}
-	bmpCache[k] = &bmpEntry{bm: bm, dpi: dpi}
-	for len(bmpCache) > bitmapCap {
+	bmpCache[k] = &bmpEntry{bm: bm, dpi: dpi, size: size}
+	bmpBytes += size
+	bmpOrder = append(bmpOrder, k)
+	// Never evict the newest entry: one oversized render (a 600 DPI
+	// letter page is ~134MB) must stay for the page that displays it, and
+	// evicting a just-shown bitmap would flicker it to a placeholder.
+	for bmpBytes > bmpBudget && len(bmpOrder) > 1 {
 		bmpDelete(bmpOrder[0])
 	}
 }
@@ -929,9 +882,11 @@ func bmpPut(k bmpKey, bm *ui.Bitmap, dpi int) {
 // bmpDelete drops k from the cache and the eviction order. The caller
 // holds viewerMu.
 func bmpDelete(k bmpKey) {
-	if _, ok := bmpCache[k]; !ok {
+	e, ok := bmpCache[k]
+	if !ok {
 		return
 	}
+	bmpBytes -= e.size
 	delete(bmpCache, k)
 	if i := slices.Index(bmpOrder, k); i >= 0 {
 		bmpOrder = slices.Delete(bmpOrder, i, i+1)

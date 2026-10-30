@@ -22,6 +22,7 @@ package app
 import (
 	"fmt"
 	"image"
+	"slices"
 	"strings"
 	"sync"
 
@@ -45,8 +46,17 @@ var (
 	thumbsRequested = map[string]map[int]bool{}   // tab → pages with a render in flight
 	thumbLastPage   = map[string]int{}            // tab → last CurPage scrolled into view
 	thumbBitmaps    = map[thumbKey]*thumbBitmap{} // (tab, page) → ui bitmap
-	thumbOrder      []thumbKey                    // bitmap insertion order, for the cap
+	thumbOrder      []thumbKey                    // bitmap eviction order, oldest first
 	outlineOpen     = map[string]*bool{}          // "tabID|path" → expanded
+
+	// thumbBudget bounds the thumbnail bitmaps by pixel bytes (incl. the
+	// +⅓ mygo mipmap levels a minified thumb always carries), not entry
+	// count: the old 200-entry cap let a scrolled-through document pin
+	// hundreds of MB of thumbnails past the PageCache's byte budget. A
+	// var so tests can shrink it; thumbBytes tracks the total, UI thread
+	// only.
+	thumbBudget = int64(32 << 20)
+	thumbBytes  int64
 )
 
 type thumbKey struct {
@@ -54,12 +64,14 @@ type thumbKey struct {
 	page  int
 }
 
-// thumbBitmap pairs a ui.Bitmap with the image it was built from, so a
-// re-render can Update it in place instead of allocating a new Bitmap
-// ("Create it once: converting an image is not free").
+// thumbBitmap pairs a ui.Bitmap with the image it was built from and the
+// bitmap's byte cost, so a re-render can Update it in place instead of
+// allocating a new Bitmap ("Create it once: converting an image is not
+// free") and eviction can keep the byte total truthful.
 type thumbBitmap struct {
-	bmp *ui.Bitmap
-	img *image.RGBA
+	bmp  *ui.Bitmap
+	img  *image.RGBA
+	size int64
 }
 
 // sidebar renders the panel: a Thumbnails/Outline switch, then the panel
@@ -262,8 +274,9 @@ func requestThumb(s *AppState, t *Tab, p int, key pdf.CacheKey) {
 }
 
 // thumbBitmapFor returns the ui.Bitmap of a rendered thumbnail, creating
-// or updating it on the UI thread. The cache is capped at ~200 entries;
-// full-resolution images live in pdf.PageCache, not here.
+// or updating it on the UI thread. The cache is byte-bounded (thumbBudget;
+// a few dozen letter thumbs) and evicts oldest-first; full-resolution
+// images live in pdf.PageCache, not here.
 func thumbBitmapFor(t *Tab, p int, img *image.RGBA) *ui.Bitmap {
 	k := thumbKey{t.ID, p}
 	if e := thumbBitmaps[k]; e != nil {
@@ -273,14 +286,35 @@ func thumbBitmapFor(t *Tab, p int, img *image.RGBA) *ui.Bitmap {
 		}
 		return e.bmp
 	}
-	e := &thumbBitmap{bmp: ui.NewBitmap(img), img: img}
+	// Thumbs always draw minified, so mygo's halving levels (¼ + 1/16 + …)
+	// materialize: charge 4/3 of the base pixels.
+	b := img.Bounds()
+	e := &thumbBitmap{
+		bmp:  ui.NewBitmap(img),
+		img:  img,
+		size: int64(b.Dx()) * int64(b.Dy()) * 4 * 4 / 3,
+	}
+	thumbBytes += e.size
 	thumbBitmaps[k] = e
 	thumbOrder = append(thumbOrder, k)
-	for len(thumbOrder) > 200 {
-		delete(thumbBitmaps, thumbOrder[0])
-		thumbOrder = thumbOrder[1:]
+	for thumbBytes > thumbBudget && len(thumbOrder) > 1 {
+		thumbDrop(thumbOrder[0]) // never the newest: it may be on screen
 	}
 	return e.bmp
+}
+
+// thumbDrop removes one cached thumbnail bitmap, keeping thumbBytes in
+// step. UI thread only.
+func thumbDrop(k thumbKey) {
+	e, ok := thumbBitmaps[k]
+	if !ok {
+		return
+	}
+	thumbBytes -= e.size
+	delete(thumbBitmaps, k)
+	if i := slices.Index(thumbOrder, k); i >= 0 {
+		thumbOrder = slices.Delete(thumbOrder, i, i+1)
+	}
 }
 
 // ---- Outline ------------------------------------------------------------
@@ -411,15 +445,8 @@ func pruneChromeState(s *AppState) {
 		live := tabIDSet(s)
 		for k := range thumbBitmaps {
 			if !live[k.tabID] {
-				delete(thumbBitmaps, k)
+				thumbDrop(k) // keeps thumbBytes in step
 			}
-		}
-		for i := 0; i < len(thumbOrder); {
-			if live[thumbOrder[i].tabID] {
-				i++
-				continue
-			}
-			thumbOrder = append(thumbOrder[:i], thumbOrder[i+1:]...)
 		}
 	}
 	if len(thumbLists) > 64 {

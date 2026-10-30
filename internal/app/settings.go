@@ -46,6 +46,28 @@ var SettingsPath = func() (string, error) {
 	return filepath.Join(dir, settingsFileName), nil
 }
 
+// thumbsDirName is the subdirectory of the user data directory holding
+// the launcher's cached recent-document thumbnails.
+const thumbsDirName = "thumbs"
+
+// ThumbsDir returns the thumbnail cache directory, creating nothing. A
+// var so tests can point it at a temporary directory; the GOPDF_SETTINGS
+// directory wins, so automated runs never touch the real cache.
+var ThumbsDir = func() (string, error) {
+	if p := os.Getenv("GOPDF_SETTINGS"); p != "" {
+		return filepath.Join(filepath.Dir(p), thumbsDirName), nil
+	}
+	dir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		base, e := os.UserConfigDir()
+		if e != nil {
+			return "", e
+		}
+		dir = filepath.Join(base, "GoPDF")
+	}
+	return filepath.Join(dir, thumbsDirName), nil
+}
+
 // LoadSettings reads the settings file. A missing file is not an error for
 // the caller to act on beyond taking the defaults: it returns the zero
 // SettingsFile and the error, which main treats as "first launch".

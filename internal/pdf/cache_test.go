@@ -127,6 +127,35 @@ func TestPageCacheOversized(t *testing.T) {
 	}
 }
 
+func TestPageCacheEnsureMax(t *testing.T) {
+	c := NewPageCache(128 << 20)
+	if got := c.Max(); got != 128<<20 {
+		t.Fatalf("Max = %d, want the constructor budget", got)
+	}
+	// Smaller asks never shrink the budget.
+	if got := c.EnsureMax(64 << 20); got != 128<<20 {
+		t.Errorf("EnsureMax(small) = %d, want unchanged", got)
+	}
+	if got := c.EnsureMax(200 << 20); got != 200<<20 {
+		t.Errorf("EnsureMax(big) = %d, want raised", got)
+	}
+	if got := c.Max(); got != 200<<20 {
+		t.Errorf("Max after raise = %d, want 200MB", got)
+	}
+
+	// The raise really holds more: three big images survive where the
+	// constructor budget would have evicted all but one.
+	big := mkImg(2048, 2048) // 16MB of pixels
+	c2 := NewPageCache(2 * int64(len(big.Pix)))
+	c2.EnsureMax(3 * int64(len(big.Pix)))
+	for p := 0; p < 3; p++ {
+		c2.Put(CacheKey{Page: p}, big)
+	}
+	if c2.Len() != 3 {
+		t.Errorf("Len = %d, want 3 after EnsureMax made room", c2.Len())
+	}
+}
+
 func TestPageCacheClear(t *testing.T) {
 	c := NewPageCache(1 << 20)
 	c.Put(CacheKey{Page: 1}, mkImg(4, 4))

@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -28,6 +29,14 @@ import (
 var iconPNG []byte
 
 func main() {
+	// Memory discipline, before anything allocates: collect at 1.6× the
+	// live heap instead of 2× (transient render buffers are tens of MB),
+	// and keep a soft ceiling well above the caches' combined budgets so
+	// multi-tab growth meets extra GC instead of unbounded RSS. The limit
+	// is soft: exceeding it costs GC cycles, never a crash.
+	debug.SetGCPercent(60)
+	debug.SetMemoryLimit(512 << 20)
+
 	state := app.NewAppState()
 
 	// Persisted settings and theme, before the window: mygo documents

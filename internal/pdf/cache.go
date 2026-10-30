@@ -21,10 +21,33 @@ type cacheEntry struct {
 	recent uint64
 }
 
-// NewPageCache returns a cache holding at most maxBytes of RGBA pixel data.
-// Spec §9: ~150MB for 3 pages at 200 DPI leaves ample headroom with 256MB.
+// NewPageCache returns a cache holding at most maxBytes of RGBA pixel
+// data. The budget starts at defaultCacheBytes (state.go) and is raised
+// adaptively by EnsureMax when renders larger than half the budget land —
+// ordinary sessions never leave the default, extreme zoom keeps today's
+// scroll-back warmth.
 func NewPageCache(maxBytes int64) *PageCache {
 	return &PageCache{max: maxBytes, m: make(map[CacheKey]*cacheEntry)}
+}
+
+// EnsureMax raises the cache budget to nBytes if that is larger than the
+// current budget — only up, never down, so one call per render can lift
+// the ceiling without another caller being able to shrink it. Returns the
+// budget in effect. Thread-safe.
+func (c *PageCache) EnsureMax(nBytes int64) int64 {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	if nBytes > c.max {
+		c.max = nBytes
+	}
+	return c.max
+}
+
+// Max returns the cache budget in bytes. Thread-safe.
+func (c *PageCache) Max() int64 {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.max
 }
 
 // Get returns the cached image for key, or nil. Bumps recency.

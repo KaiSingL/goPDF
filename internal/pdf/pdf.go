@@ -96,8 +96,19 @@ const (
 	MinDPI = 36
 	MaxDPI = 600
 	// ThumbDPI is the sidebar thumbnail resolution (spec §13 default).
-	ThumbDPI = 72
+	// Thumbs show at 120 DIP height — ≤240px on a 2× display — so 48 DPI
+	// (528px on a letter page) stays oversampled on any screen: bytes drop
+	// 2.25× with nothing visible lost.
+	ThumbDPI = 48
 )
+
+// Every MuPDF context (one per open document, plus transient ones) bounds
+// its resource store — decoded fonts, images — by MaxStore bytes of C-heap
+// the Go runtime cannot see or collect. The upstream default is 256MB per
+// context; 64MB keeps re-decode cost negligible for real documents while
+// bounding the invisible heap a tab session can sit on. Must run before
+// the first fitz.New, which package init guarantees.
+func init() { fitz.MaxStore = 64 << 20 }
 
 // Errors returned by the package.
 var (
@@ -412,6 +423,29 @@ func (d *Doc) RenderAsync(req RenderReq, fn func(*image.RGBA, error)) {
 		}
 		fn(img, nil)
 	}
+}
+
+// RenderThumb renders page 0 of the file at path at ThumbDPI, opening and
+// closing a document just for that one page. Unlike Open it never walks
+// the page tree (one Bound per page), the outline or the metadata, so the
+// launcher's on-demand thumbnails of recent documents cost a single page
+// load each instead of a full document load. The image is a fresh
+// 0-origin RGBA owned by the caller.
+func RenderThumb(path string) (*image.RGBA, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	fit, err := fitz.New(abs)
+	if err != nil {
+		return nil, fmt.Errorf("pdf: open %s: %w", abs, err)
+	}
+	defer fit.Close()
+	img, err := fit.ImageDPI(0, ThumbDPI)
+	if err != nil {
+		return nil, fmt.Errorf("pdf: thumb %s: %w", abs, err)
+	}
+	return normalizeRGBA(img), nil
 }
 
 // IndexAsync builds (once) the searchable text index of the whole document

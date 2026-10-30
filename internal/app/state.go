@@ -14,7 +14,6 @@ package app
 import (
 	"fmt"
 	"path/filepath"
-	"runtime/debug"
 	"strings"
 	"sync/atomic"
 
@@ -47,6 +46,16 @@ const (
 
 // SidebarWidth is the sidebar width in DIPs (spec §4: 280px).
 const SidebarWidth = 280.0
+
+// Page-image budgets. defaultCacheBytes is a tab's starting budget — room
+// for the visible pages and their neighbors at ordinary zoom. A settled
+// render larger than half the budget raises it adaptively (viewer.go, up
+// to maxCacheBytes), so scrolling at extreme zoom keeps every page it
+// showed cached exactly as before.
+const (
+	defaultCacheBytes int64 = 128 << 20
+	maxCacheBytes     int64 = 256 << 20
+)
 
 // SearchState is the in-document search state of one tab.
 type SearchState struct {
@@ -227,7 +236,7 @@ func (s *AppState) OpenTab(path string) (*Tab, error) {
 		ZoomMode: s.Settings.DefaultZoomMode,
 		Rotate:   0,
 		Outline:  doc.Outline(),
-		Cache:    pdf.NewPageCache(256 << 20),
+		Cache:    pdf.NewPageCache(defaultCacheBytes),
 	}
 	if s.Settings.DefaultZoomMode == ZoomCustom {
 		t.Zoom = clampZoom(s.Settings.DefaultZoom)
@@ -296,6 +305,9 @@ func (s *AppState) CloseTab(id string) {
 	// pixel buffers reachable. Lives in components.go so this file stays
 	// mygo-free.
 	teardownTabState(t.ID)
+	// Any tab close frees a whole document and its caches; hand the freed
+	// pages back to the OS promptly (debounced, background).
+	notifyRelease()
 	s.ClosedPaths = append([]string{t.Path}, s.ClosedPaths...)
 	if len(s.ClosedPaths) > 16 {
 		s.ClosedPaths = s.ClosedPaths[:16]
@@ -303,10 +315,8 @@ func (s *AppState) CloseTab(id string) {
 	switch {
 	case len(s.Tabs) == 0:
 		s.ActiveTab = -1
-		// Last tab closed: the caches above (and the doc's renders) freed
-		// a lot at once. Nudge the runtime to hand it to the OS in the
-		// background instead of sitting on it (stdlib only).
-		go debug.FreeOSMemory()
+		// The caches above (and the doc's renders) freed a lot at once;
+		// notifyRelease has already asked for the OS hand-back.
 	case idx < s.ActiveTab:
 		s.ActiveTab--
 	case idx == s.ActiveTab:
@@ -452,6 +462,7 @@ func (t *Tab) Reload() {
 		t.Cache.Clear()
 	}
 	t.ReloadGen++
+	notifyRelease()
 }
 
 // RunSearch executes the tab's current query. The text index is a fast

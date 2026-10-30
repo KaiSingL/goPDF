@@ -116,14 +116,16 @@ func Update(fn func()) { update(fn) }
 
 // teardownTabState releases every per-tab UI cache of a closed tab:
 //
-//   - viewer.go: bmpCache (page bitmaps, up to bitmapCap = 48 entries —
-//     each pins a full page render's pixels, because ui.Bitmap zero-copies
-//     the RGBA), inflight, viewerStates and viewerGen (all viewerMu-guarded;
-//     bmpClearTab and inflightClearTab expect the caller to hold it).
-//   - sidebar.go: thumbBitmaps/thumbOrder (thumbnail bitmaps, up to the
-//     200-entry cap; UI-thread-only), thumbLists and thumbLastPage
-//     (UI-thread-only), thumbsRequested and thumbGens (thumbMu-guarded,
-//     shared with the doc workers) and outlineOpen ("tabID|path" keys).
+//   - viewer.go: bmpCache (page bitmaps, byte-budgeted at bmpBudget —
+//     each entry pins a full page render's pixels, because ui.Bitmap
+//     zero-copies the RGBA), inflight, viewerStates and viewerGen (all
+//     viewerMu-guarded; bmpClearTab and inflightClearTab expect the
+//     caller to hold it).
+//   - sidebar.go: thumbBitmaps/thumbOrder (thumbnail bitmaps,
+//     byte-budgeted at thumbBudget; UI-thread-only), thumbLists and
+//     thumbLastPage (UI-thread-only), thumbsRequested and thumbGens
+//     (thumbMu-guarded, shared with the doc workers) and outlineOpen
+//     ("tabID|path" keys).
 //   - searchpanel.go: searchQueries, searchLists and searchScrolled
 //     (UI-thread-only; small, but dropped here rather than waiting for the
 //     panel's lazy pruning).
@@ -153,15 +155,8 @@ func teardownTabState(tabID string) {
 	thumbMu.Unlock()
 	for k := range thumbBitmaps {
 		if k.tabID == tabID {
-			delete(thumbBitmaps, k)
+			thumbDrop(k) // keeps thumbBytes in step
 		}
-	}
-	for i := 0; i < len(thumbOrder); { // compact the cap order too
-		if thumbOrder[i].tabID == tabID {
-			thumbOrder = append(thumbOrder[:i], thumbOrder[i+1:]...)
-			continue
-		}
-		i++
 	}
 	prefix := tabID + "|"
 	for k := range outlineOpen {
