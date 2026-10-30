@@ -613,6 +613,60 @@ func TestSidebarThumbnailsAndOutline(t *testing.T) {
 	}
 }
 
+func TestOutlineCollapseExpandAll(t *testing.T) {
+	s := chromeState(1)
+	tab := s.Tabs[0]
+	// Two levels below the fold: "Subsection 1.1.1" sits inside a branch
+	// that has never been built when the panel opens, so revealing it is
+	// what proves expand-all walks the whole tree, not just the entries
+	// that happen to exist already.
+	tab.Outline = []pdf.OutlineNode{
+		{Title: "Chapter 1", Page: 1, Children: []pdf.OutlineNode{
+			{Title: "Section 1.1", Page: 2, Children: []pdf.OutlineNode{
+				{Title: "Subsection 1.1.1", Page: 3},
+			}},
+		}},
+	}
+	tt := ui.NewTester(func(c *ui.Context) {
+		ui.Row(c).Fill().Children(func() { sidebar(c, s) })
+	}, 700, 900)
+
+	if err := tt.Click("Outline"); err != nil {
+		t.Fatal(err)
+	}
+	// Fresh panel: every branch folded.
+	if tt.HasText("Section 1.1") {
+		t.Errorf("outline starts expanded; texts %q", tt.Texts())
+	}
+
+	// Expand all reveals every level in one pass.
+	if err := tt.Click("Expand all"); err != nil {
+		t.Fatal(err)
+	}
+	if !tt.HasText("Section 1.1") || !tt.HasText("Subsection 1.1.1") {
+		t.Errorf("expand all missed deep levels; texts %q", tt.Texts())
+	}
+
+	// Entries stay live after folding.
+	if err := tt.Click("Subsection 1.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	if tab.CurPage != 3 {
+		t.Fatalf("CurPage = %d, want 3", tab.CurPage)
+	}
+
+	// Collapse all folds everything but keeps the top level.
+	if err := tt.Click("Collapse all"); err != nil {
+		t.Fatal(err)
+	}
+	if tt.HasText("Section 1.1") || tt.HasText("Subsection 1.1.1") {
+		t.Errorf("collapse all left entries visible; texts %q", tt.Texts())
+	}
+	if !tt.HasText("Chapter 1") {
+		t.Errorf("collapse all removed the top level; texts %q", tt.Texts())
+	}
+}
+
 func TestSidebarWithoutDoc(t *testing.T) {
 	s := chromeState(1)
 	tt := ui.NewTester(func(c *ui.Context) {

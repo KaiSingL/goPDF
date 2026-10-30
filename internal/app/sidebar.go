@@ -286,16 +286,66 @@ func thumbBitmapFor(t *Tab, p int, img *image.RGBA) *ui.Bitmap {
 // ---- Outline ------------------------------------------------------------
 
 // outlinePanel renders t.Outline as a tree; -1 pages are muted and dead.
-// The section the reader is currently in is highlighted.
+// The section the reader is currently in is highlighted. A small tool row
+// above the tree folds or opens every branch at once — only shown when the
+// outline has branches at all (a flat list has nothing to fold).
 func outlinePanel(c *ui.Context, t *Tab) {
+	th := c.Theme()
 	if len(t.Outline) == 0 {
-		ui.Text(c, "No outline").TextColor(c.Theme().TextMuted).FontSize(13)
+		ui.Text(c, "No outline").TextColor(th.TextMuted).FontSize(13)
 		return
 	}
 	current := currentOutlinePath(t)
+	if outlineBranchy(t.Outline) {
+		tools := ui.Row(c).Gap(th.Space(0.5)).FillWidth()
+		tools.Children(func() {
+			fold := ui.Button(c, "Collapse all").FontSize(12).Grow(1)
+			fold.TextColor(th.TextMuted)
+			fold.OnClick(func() { setOutlineAll(t, false) })
+			unfold := ui.Button(c, "Expand all").FontSize(12).Grow(1)
+			unfold.TextColor(th.TextMuted)
+			unfold.OnClick(func() { setOutlineAll(t, true) })
+		})
+	}
 	ui.Scroll(c).Fill().Children(func() {
 		ui.Tree(c, func() { walkOutline(c, t, t.Outline, "o", current) })
 	})
+}
+
+// setOutlineAll opens or folds every branch of the tab's outline. It must
+// walk the WHOLE tree: outlineOpen entries are created lazily as branches
+// are built, so nodes inside a never-opened section have no entry yet —
+// flipping only the existing ones would leave those folded. The next build
+// reads the pointers and renders the new state in one pass.
+func setOutlineAll(t *Tab, open bool) {
+	var walk func(nodes []pdf.OutlineNode, path string)
+	walk = func(nodes []pdf.OutlineNode, path string) {
+		for i, n := range nodes {
+			p := fmt.Sprintf("%s/%d", path, i)
+			if len(n.Children) > 0 {
+				key := t.ID + "|" + p
+				b := outlineOpen[key]
+				if b == nil {
+					b = new(bool)
+					outlineOpen[key] = b
+				}
+				*b = open
+				walk(n.Children, p)
+			}
+		}
+	}
+	walk(t.Outline, "o")
+}
+
+// outlineBranchy reports whether any outline node has children — a flat
+// outline has nothing to fold, so the tool row stays hidden.
+func outlineBranchy(nodes []pdf.OutlineNode) bool {
+	for i := range nodes {
+		if len(nodes[i].Children) > 0 || outlineBranchy(nodes[i].Children) {
+			return true
+		}
+	}
+	return false
 }
 
 // currentOutlinePath returns the path of the outline entry the reader is
