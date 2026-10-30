@@ -24,7 +24,7 @@ Direct3D 11 on Windows) and [MuPDF](https://mupdf.com) through
 ## Status
 
 **v0.1.0 MVP complete.** See [PLAN.md](PLAN.md) for the build plan and
-[Modern-Pdf-Spec.md](Modern-Pdf-Spec.md) for the product spec.
+[goPDF-spec.md](goPDF-spec.md) for the product spec.
 Measured: 100-page doc opens in 23–33 ms, first 150-DPI render 37–58 ms.
 
 ## Development

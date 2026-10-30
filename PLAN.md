@@ -11,7 +11,7 @@
 > - Windows menu accelerators fire before the view; `Theme.SetSource` off-main pre-Run deadlocks
 > - `mygo.NewDocuments` unusable for a tabbed reader (window-per-doc) — plain `OnOpenFile` used
 
-Execution plan for `Modern-Pdf-Spec.md`, verified against the real MyGo (v0.6.4) and
+Execution plan for `goPDF-spec.md`, verified against the real MyGo (v0.6.4) and
 go-fitz toolchains on this machine (Windows 11, x64).
 
 ## 0. Spec corrections (verified against docs)
