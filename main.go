@@ -135,9 +135,12 @@ func main() {
 		// scrolltest.go): GOPDF_SCROLLTEST=<dir> runs a scripted jump
 		// sequence over a generated document and saves window captures
 		// per step, then quits. Debug-only; never set in normal use.
+		// Automated runs keep their settings in a scratch file so they
+		// never rewrite the user's window size or recents.
 		// GOPDF_DEBUG_VIEWER=1 enables just the overlay/ring/hotkey for
 		// manual reproduction.
 		if dir := os.Getenv("GOPDF_SCROLLTEST"); dir != "" {
+			os.Setenv("GOPDF_SETTINGS", filepath.Join(dir, "probe-settings.json"))
 			app.DebugScrollCapture(dir)
 		} else if os.Getenv("GOPDF_DEBUG_VIEWER") != "" {
 			app.EnableViewerDebug()

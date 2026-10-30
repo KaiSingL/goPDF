@@ -101,8 +101,9 @@ func run(dir string) {
 	// Jumps in scrambled order: far jumps snap (viewer.go), so each step
 	// settles within a frame or two of its render landing.
 	steps := []int{1, 6, 3, 14, 8, 20, 5, 11, 2, 17, 9, 4, 15, 7, 19, 10, 13, 16, 12, 18}
-	mismatches := 0
+	mismatches, idles := 0, 0
 	for si, page := range steps {
+		frameBefore := debugFrame.Load()
 		var curPage int
 		uiSync(func() {
 			if t := current.Active(); t != nil {
@@ -120,12 +121,23 @@ func run(dir string) {
 			log.Printf("scrolltest: step %02d target p%02d — no captures", si, page)
 			continue
 		}
-		verdict := fmt.Sprintf("MATCH (dist %d, margin %d)", dist, margin)
-		if blank {
+		// A jump must build at least one frame; if the counter did not
+		// move across the whole step the window stopped painting (an
+		// environmental stall — e.g. the window being restored/moved on
+		// the desktop) and any verdict from the stale pixels is void.
+		verdict := ""
+		frozen := debugFrame.Load() == frameBefore
+		switch {
+		case frozen:
+			verdict = "APP IDLE — frames frozen, verdict void"
+			idles++
+		case blank:
 			verdict = "INDETERMINATE (center blank)"
-		} else if shown != page {
+		case shown != page:
 			verdict = fmt.Sprintf("MISMATCH (shows page %d, dist %d, margin %d)", shown, dist, margin)
 			mismatches++
+		default:
+			verdict = fmt.Sprintf("MATCH (dist %d, margin %d)", dist, margin)
 		}
 		log.Printf("scrolltest: step %02d target p%02d settled=%v frame=%d shows p%02d — %s",
 			si, page, settled, debugFrame.Load(), shown, verdict)
@@ -133,7 +145,7 @@ func run(dir string) {
 		// On a mismatch: the scroll state at the stable wrong frame —
 		// Y at the target's box top means the paint lags (container);
 		// Y one page short means the snap targeted the wrong box (state).
-		if shown != page && !blank {
+		if shown != page && !blank && !frozen {
 			var y, maxYY, boxTop float32
 			var cur, seen int
 			for i := 0; i < 5; i++ { // snapshot until two consecutive agree
@@ -193,7 +205,7 @@ func run(dir string) {
 	} else {
 		log.Printf("scrolltest: flick settled shows p%02d (dist %d, margin %d)", shown, dist, margin)
 	}
-	log.Printf("scrolltest: done — %d mismatches over %d jump steps", mismatches, len(steps))
+	log.Printf("scrolltest: done — %d mismatches, %d frozen steps over %d jump steps", mismatches, idles, len(steps))
 	DebugDumpViewer()
 	mygo.App.Quit()
 }
@@ -214,11 +226,17 @@ func pageCrop(g *image.Gray) *image.Gray {
 	if !ok || deviceScale <= 0 {
 		return cropViewer(g)
 	}
+	// The test doc draws the digit in the page's top-left (400pt glyph
+	// at 8,480 — the top 40% of the page, widest page "20" ends at 75%
+	// width): cut the crop to that region of the FULL box, so the page's
+	// edge lines and everything below can never enter the ink bounding
+	// box. The fractions must come off the unclipped box — intersecting
+	// with the capture first makes them fractions of the visible part,
+	// and the shorter view then slices the digit's base off.
 	px := image.Rect(
 		int(r.X*deviceScale), int(r.Y*deviceScale),
-		int((r.X+r.W)*deviceScale), int((r.Y+r.H)*deviceScale))
-	b := g.Bounds()
-	px = px.Intersect(b)
+		int((r.X+r.W*0.8)*deviceScale), int((r.Y+r.H*0.5)*deviceScale))
+	px = px.Intersect(g.Bounds())
 	if px.Empty() {
 		return cropViewer(g)
 	}

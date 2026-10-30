@@ -28,8 +28,13 @@ type SettingsFile struct {
 const settingsFileName = "settings.json"
 
 // SettingsPath returns the path of the settings file. A variable so tests
-// can point it at a temporary directory.
+// can point it at a temporary directory. GOPDF_SETTINGS overrides it —
+// the scrolltest probe sets that to a scratch file so automated runs
+// never rewrite the user's window size or recents.
 var SettingsPath = func() (string, error) {
+	if p := os.Getenv("GOPDF_SETTINGS"); p != "" {
+		return p, nil
+	}
 	dir, err := mygo.App.Path(mygo.PathUserData)
 	if err != nil {
 		base, e := os.UserConfigDir()
