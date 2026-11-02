@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"image"
 	"image/png"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -62,7 +63,10 @@ func TestTitleBarComposition(t *testing.T) {
 
 func TestTitleBarFileMenu(t *testing.T) {
 	s := chromeState(1)
-	s.Recents = []string{`C:\tmp\newest.pdf`, `C:\tmp\older.pdf`}
+	// OS-native separators: the menu labels are filepath.Base of these, so
+	// backslash paths would not split on darwin and the items never match.
+	recents := t.TempDir()
+	s.Recents = []string{filepath.Join(recents, "newest.pdf"), filepath.Join(recents, "older.pdf")}
 	tt := ui.NewTester(titleView(s), 900, 48)
 	tt.SetTitleBar(winButtons)
 

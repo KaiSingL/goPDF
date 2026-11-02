@@ -2,6 +2,9 @@
 // common dialog (comdlg32) and the GDI/winspool drawing calls (gdi32).
 // Struct layouts follow PRINTDLGW on amd64 (8-byte alignment; the struct
 // is 66 bytes packed per the SDK — see field offsets in the comments).
+//
+//go:build windows
+
 package print
 
 import (

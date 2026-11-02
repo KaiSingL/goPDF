@@ -6,6 +6,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,16 +17,22 @@ import (
 // the first screen of results to appear.
 func TestPaletteWheelScrolls(t *testing.T) {
 	s := NewAppState()
+	// OS-native separators: the sidebar behind the modal labels rows with
+	// filepath.Base of these, and the scroll check below relies on the
+	// full path appearing ONLY in the palette's detail line — backslash
+	// paths would not split on darwin and the negative check could not
+	// tell the two apart.
+	dir := t.TempDir()
 	for i := 1; i <= 24; i++ {
-		s.Recents = append(s.Recents, fmt.Sprintf(`C:\tmp\recent-%02d.pdf`, i))
+		s.Recents = append(s.Recents, filepath.Join(dir, fmt.Sprintf("recent-%02d.pdf", i)))
 	}
 	tt := ui.NewTester(s.View, 1200, 800)
 	tt.Frame()
 
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	tt.Frame()
 	if !s.ShowPalette {
-		t.Fatal("Ctrl+K did not open the palette")
+		t.Fatal("Cmd/Ctrl+K did not open the palette")
 	}
 
 	// Rows are ~44 DIPs tall in a ~372 DIP list: roughly the first 8
@@ -53,7 +60,8 @@ func TestPaletteWheelScrolls(t *testing.T) {
 	// Negative check must use a palette-only string: the sidebar's recents
 	// list behind the modal also contains "recent-01.pdf", but only the
 	// palette shows the full detail path.
-	if tt.HasText(`C:\tmp\recent-01.pdf`) {
+	firstRecent := filepath.Join(dir, "recent-01.pdf")
+	if tt.HasText(firstRecent) {
 		t.Fatalf("wheel did not scroll: first row still in view; texts=%q", tt.Texts())
 	}
 }

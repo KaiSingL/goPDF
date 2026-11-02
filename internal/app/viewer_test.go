@@ -207,14 +207,14 @@ func TestViewerZoomGestures(t *testing.T) {
 	// what Windows reports) steps the zoom by ZoomStep. The Tester's
 	// Wheel sends no modifiers, so this drives viewerInput directly.
 	g := computeGeom(tab, tab.Zoom)
-	ok := viewerInput(s, g, ui.InputEvent{Kind: ui.InputScroll, DY: -40, Mods: ui.Ctrl})
+	ok := viewerInput(s, g, ui.InputEvent{Kind: ui.InputScroll, DY: -40, Mods: ui.Cmd})
 	if !ok {
-		t.Fatal("viewerInput did not take a Ctrl wheel notch")
+		t.Fatal("viewerInput did not take a Cmd/Ctrl wheel notch")
 	}
 	tt.Frame()
 	want *= ZoomStep
 	if math.Abs(tab.Zoom-want) > want*1e-6 {
-		t.Errorf("after Ctrl notch zoom = %v, want %v", tab.Zoom, want)
+		t.Errorf("after Cmd/Ctrl notch zoom = %v, want %v", tab.Zoom, want)
 	}
 
 	// Plain scrolling is left to the scroll container.

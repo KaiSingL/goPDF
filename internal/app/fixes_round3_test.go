@@ -37,10 +37,10 @@ func TestPaletteFlow(t *testing.T) {
 	tt := ui.NewTester(s.View, 1200, 800)
 	tt.Frame()
 
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	tt.Frame()
 	if !s.ShowPalette {
-		t.Fatal("Ctrl+K did not open the palette")
+		t.Fatal("Cmd/Ctrl+K did not open the palette")
 	}
 	if !tt.HasText("COMMANDS") && !tt.HasText("Commands") {
 		t.Fatalf("palette has no command section: %q", tt.Texts())

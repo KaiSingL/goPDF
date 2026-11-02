@@ -115,10 +115,10 @@ func TestPaletteThemeCommands(t *testing.T) {
 	tt := ui.NewTester(s.View, 900, 700)
 	tt.Frame()
 
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	tt.Frame()
 	if !s.ShowPalette {
-		t.Fatal("Ctrl+K did not open the palette")
+		t.Fatal("Cmd/Ctrl+K did not open the palette")
 	}
 	// The field is AutoFocus: typing lands in it without a click (the
 	// established TestPaletteFlow pattern — the placeholder is not a

@@ -29,7 +29,10 @@ Measured: 100-page doc opens in 23–33 ms, first 150-DPI render 37–58 ms.
 
 ## Development
 
-Requires Go 1.27+ and a mingw-w64 gcc (cgo, for MuPDF). On this machine:
+Requires Go 1.27+ and a C compiler for cgo (MuPDF): a mingw-w64 gcc on
+Windows, Apple clang (Xcode CLT) on macOS.
+
+**Windows** — Go + a mingw-w64 gcc:
 
 ```powershell
 . .\dev.ps1        # sets PATH, CGO_ENABLED=1, CC
@@ -40,6 +43,17 @@ go tool mygo dev   # run the app with live reload
 go tool mygo build # package installers
 ```
 
+**macOS** — `brew install go`, then:
+
+```sh
+. ./dev.sh         # sets CGO_ENABLED=1, CC=clang
+go build ./...     # compile everything
+go test ./...      # headless tests (pdf core + UI view tests)
+go run ./cmd/smoke # fitz end-to-end smoke test + perf probe
+go tool mygo dev   # run the app with live reload
+go tool mygo build # package .app + dmg
+```
+
 ## License
 
 **AGPL-3.0** — see [LICENSE](LICENSE). MuPDF/go-fitz are AGPL, so this
@@ -48,6 +62,10 @@ commercial MuPDF license from Artifex.
 
 ## Notes & limitations
 
+- Printing ships on **Windows** (GDI pipeline in `internal/print`) and
+  **macOS** (PDFKit print panel, `print_darwin.go`); other platforms
+  report that printing is not available. macOS job names show "GoPDF"
+  in the printer queue (no public per-document key in the modern SDK).
 - The MuPDF builds bundled with go-fitz have no CJK fonts; CJK PDFs
   relying on embedded fonts render fine, others fall back to an OS CJK
   font when one is found (otherwise unchanged).

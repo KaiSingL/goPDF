@@ -66,7 +66,7 @@ func palettePanel(c *ui.Context, s *AppState) {
 
 	// Window shortcuts wait behind a modal, so the palette binds its own:
 	// Ctrl+K closes, Up/Down/Home/End move the selection.
-	c.OnShortcut(ui.Ctrl, ui.KeyK, func() { s.ShowPalette = false })
+	c.OnShortcut(ui.Cmd, ui.KeyK, func() { s.ShowPalette = false })
 	c.OnShortcut(0, ui.KeyDown, func() { palMove(+1) })
 	c.OnShortcut(0, ui.KeyUp, func() { palMove(-1) })
 	c.OnShortcut(0, ui.KeyHome, func() { palSel = 0; palSkipHeader(+1) })

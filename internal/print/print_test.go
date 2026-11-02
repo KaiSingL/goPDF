@@ -4,6 +4,9 @@
 // the Go struct is short, a failure that used to read as "canceled" and
 // made Print look dead. Asserting the size costs nothing and needs no
 // dialog.
+//
+//go:build windows
+
 package print
 
 import (

@@ -600,7 +600,7 @@ func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
 	case ev.Kind == ui.InputPointerUp && t.Sel.Dragging:
 		s.FinishSelection(t)
 		return true
-	case ev.Kind == ui.InputZoom || (ev.Kind == ui.InputScroll && ev.Mods&ui.Ctrl != 0):
+	case ev.Kind == ui.InputZoom || (ev.Kind == ui.InputScroll && ev.Mods&ui.Cmd != 0):
 		ev.Y = g.boxes[i].top + ev.Y - viewerScroll.Y // local → viewport
 		return viewerInput(s, g, ev)
 	}
@@ -711,7 +711,7 @@ func viewerInput(s *AppState, g geom, ev ui.InputEvent) bool {
 	case ev.Kind == ui.InputZoom:
 		viewerZoom(s, t, g, float64(ev.Scale), ev.Y)
 		return true
-	case ev.Kind == ui.InputScroll && ev.Mods&ui.Ctrl != 0:
+	case ev.Kind == ui.InputScroll && ev.Mods&ui.Cmd != 0:
 		step := 1 / ZoomStep
 		if ev.DY < 0 { // a notch up zooms in
 			step = ZoomStep

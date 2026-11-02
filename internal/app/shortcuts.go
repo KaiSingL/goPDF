@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -40,13 +41,27 @@ func SetState(s *AppState) { current = s }
 // would not re-trigger focus).
 var searchFocusSeq atomic.Uint64
 
-// shortcuts declares the window-scope keyboard bindings (spec §5).
-func shortcuts(c *ui.Context, s *AppState) {
-	c.OnShortcut(ui.Ctrl, ui.KeyO, openFilePicker)
+// modKey is the display form of the primary shortcut modifier for
+// tooltips and other user-facing strings: ⌘ on macOS, Ctrl elsewhere —
+// the human-readable twin of ui.Cmd, the actual modifier bound below.
+// MyGo ships no display-name helper (verified against the pinned v0.6.4
+// source), so the label lives here.
+var modKey = func() string {
+	if runtime.GOOS == "darwin" {
+		return "⌘"
+	}
+	return "Ctrl"
+}()
 
-	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyT, func() { s.ReopenClosedTab() })
-	c.OnShortcut(ui.Ctrl, ui.KeyW, func() { s.CloseActiveTab() })
-	c.OnShortcut(ui.Ctrl, ui.KeyP, PrintActive)
+// shortcuts declares the window-scope keyboard bindings (spec §5). The
+// primary modifier is ui.Cmd: Command on macOS, Ctrl elsewhere (per its
+// definition in the pinned source), so one declaration serves both.
+func shortcuts(c *ui.Context, s *AppState) {
+	c.OnShortcut(ui.Cmd, ui.KeyO, openFilePicker)
+
+	c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyT, func() { s.ReopenClosedTab() })
+	c.OnShortcut(ui.Cmd, ui.KeyW, func() { s.CloseActiveTab() })
+	c.OnShortcut(ui.Cmd, ui.KeyP, PrintActive)
 
 	// Presentation (present.go): Ctrl+L enters on the active document or
 	// leaves if already presenting. In the slide view, presentView's own
@@ -56,21 +71,21 @@ func shortcuts(c *ui.Context, s *AppState) {
 	// Ctrl+F opens the search panel AND stores a fresh focus token, which
 	// the panel's field (searchpanel.go) FocusBinds to: the panel opens
 	// already focused, so typing starts immediately.
-	c.OnShortcut(ui.Ctrl, ui.KeyF, func() {
+	c.OnShortcut(ui.Cmd, ui.KeyF, func() {
 		s.ShowSearchPanel = true
 		SearchFocus = fmt.Sprintf("search-%d", searchFocusSeq.Add(1))
 	})
 
 	// Zoom: Ctrl+= / Ctrl++ (Shift+=) in, Ctrl+- out, Ctrl+0 reset.
-	c.OnShortcut(ui.Ctrl, ui.KeyEqual, zoomIn(s))
-	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyEqual, zoomIn(s))
-	c.OnShortcut(ui.Ctrl, ui.KeyMinus, zoomOut(s))
-	c.OnShortcut(ui.Ctrl, ui.Key0, zoomReset(s))
+	c.OnShortcut(ui.Cmd, ui.KeyEqual, zoomIn(s))
+	c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyEqual, zoomIn(s))
+	c.OnShortcut(ui.Cmd, ui.KeyMinus, zoomOut(s))
+	c.OnShortcut(ui.Cmd, ui.Key0, zoomReset(s))
 
 	// Text selection (selection.go): Ctrl+C copies the viewer selection.
 	// A focused text input takes Ctrl+C first for its own copy — this is
 	// the window-scope fallback, as with the arrows.
-	c.OnShortcut(ui.Ctrl, ui.KeyC, func() {
+	c.OnShortcut(ui.Cmd, ui.KeyC, func() {
 		if t := s.Active(); t != nil {
 			if text := t.SelectionText(); text != "" {
 				c.WriteClipboard(text)
@@ -81,7 +96,7 @@ func shortcuts(c *ui.Context, s *AppState) {
 	// Debug mode (debugviewer.go): Ctrl+Shift+D dumps the event ring and
 	// a window capture — press it at the moment a rendering bug shows.
 	if debugOn {
-		c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyD, func() { DebugDumpViewer() })
+		c.OnShortcut(ui.Cmd|ui.Shift, ui.KeyD, func() { DebugDumpViewer() })
 	}
 
 	// Page turns and jumps. Left/Right turn pages too: focused text inputs
@@ -97,7 +112,7 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyEnd, lastPage(s))
 
 	// Command palette and in-document search stepping.
-	c.OnShortcut(ui.Ctrl, ui.KeyK, func() { s.ShowPalette = !s.ShowPalette })
+	c.OnShortcut(ui.Cmd, ui.KeyK, func() { s.ShowPalette = !s.ShowPalette })
 	c.OnShortcut(0, ui.KeyF3, func() { s.StepSearch(s.Active(), +1) })
 	c.OnShortcut(ui.Shift, ui.KeyF3, func() { s.StepSearch(s.Active(), -1) })
 

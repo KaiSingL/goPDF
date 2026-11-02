@@ -6,6 +6,9 @@
 // MyGo ships no printing API (verified against the pinned v0.6.4 source),
 // so this is pure syscall — no cgo. The dialog blocks, so Print runs on a
 // goroutine of its own.
+//
+//go:build windows
+
 package print
 
 import (

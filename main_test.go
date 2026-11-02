@@ -68,9 +68,9 @@ func TestViewSmoke(t *testing.T) {
 
 	// Ctrl+K opens the palette through the window shortcut; the modal is
 	// up and its results show.
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	if !state.ShowPalette {
-		t.Fatal("Ctrl+K did not open the palette")
+		t.Fatal("Cmd/Ctrl+K did not open the palette")
 	}
 	tt.Frame()
 	if !tt.HasText("COMMANDS") {
@@ -79,12 +79,12 @@ func TestViewSmoke(t *testing.T) {
 
 	// Ctrl+K again closes it (the palette rebinds it inside the modal,
 	// whose backdrop takes Escape as well).
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	if state.ShowPalette {
-		t.Fatal("Ctrl+K did not close the palette")
+		t.Fatal("Cmd/Ctrl+K did not close the palette")
 	}
 	tt.Frame()
-	tt.Key(ui.Ctrl, ui.KeyK)
+	tt.Key(ui.Cmd, ui.KeyK)
 	tt.Key(0, ui.KeyEscape)
 	if state.ShowPalette {
 		t.Fatal("Escape did not close the palette")
@@ -92,9 +92,9 @@ func TestViewSmoke(t *testing.T) {
 	tt.Frame()
 
 	// Ctrl+F requests search focus (the toolbar's field takes it).
-	tt.Key(ui.Ctrl, ui.KeyF)
+	tt.Key(ui.Cmd, ui.KeyF)
 	if app.SearchFocus == "" {
-		t.Error("Ctrl+F set no search focus token")
+		t.Error("Cmd/Ctrl+F set no search focus token")
 	}
 
 	// With no tabs these must be no-ops, not panics.
@@ -102,11 +102,11 @@ func TestViewSmoke(t *testing.T) {
 	tt.Key(0, ui.KeyPageUp)
 	tt.Key(0, ui.KeyHome)
 	tt.Key(0, ui.KeyEnd)
-	tt.Key(ui.Ctrl, ui.KeyW)
-	tt.Key(ui.Ctrl|ui.Shift, ui.KeyT)
-	tt.Key(ui.Ctrl, ui.KeyEqual)
-	tt.Key(ui.Ctrl, ui.KeyMinus)
-	tt.Key(ui.Ctrl, ui.Key0)
+	tt.Key(ui.Cmd, ui.KeyW)
+	tt.Key(ui.Cmd|ui.Shift, ui.KeyT)
+	tt.Key(ui.Cmd, ui.KeyEqual)
+	tt.Key(ui.Cmd, ui.KeyMinus)
+	tt.Key(ui.Cmd, ui.Key0)
 	tt.Key(0, ui.KeyF3)
 	tt.Frame()
 }

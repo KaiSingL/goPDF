@@ -519,14 +519,14 @@ func TestSearchPanelInViewAndShortcut(t *testing.T) {
 	tt := ui.NewTester(s.View, 900, 640) // the real root view
 	tt.Frame()
 	if tt.HasText("Search document") {
-		t.Fatalf("panel visible before Ctrl+F; texts %q", tt.Texts())
+		t.Fatalf("panel visible before Cmd/Ctrl+F; texts %q", tt.Texts())
 	}
 
 	// Ctrl+F opens the panel AND focuses its field with a fresh token, so
 	// typing lands without a click.
-	tt.Key(ui.Ctrl, ui.KeyF)
+	tt.Key(ui.Cmd, ui.KeyF)
 	if !s.ShowSearchPanel || !tt.HasText("Type and press Enter") {
-		t.Fatalf("Ctrl+F did not open the panel: flag %v, texts %q", s.ShowSearchPanel, tt.Texts())
+		t.Fatalf("Cmd/Ctrl+F did not open the panel: flag %v, texts %q", s.ShowSearchPanel, tt.Texts())
 	}
 	tt.Type("page-")
 	tt.Key(0, ui.KeyEnter)

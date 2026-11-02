@@ -1,6 +1,6 @@
 {
   "name": "GoPDF",
-  "identifier": "com.example.gopdf",
+  "identifier": "io.github.kaisingl.gopdf",
   "version": "0.1.1",
   "out": "build",
   "fileAssociations": [

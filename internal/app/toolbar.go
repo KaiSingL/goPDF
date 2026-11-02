@@ -135,22 +135,22 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 		// Section 4 — flush right: save (save.go; OFF for documents that
 		// cannot mutate — a denied-annotate doc can never become dirty),
 		// search (it toggles the right-side results panel,
-		// searchpanel.go), print (the same PrintActive as Ctrl+P and the
-		// File menu) and the more menu. Share and comment are v1
+		// searchpanel.go), print (the same PrintActive as the shortcut
+		// and the File menu) and the more menu. Share and comment are v1
 		// non-goals (spec §2), and permanently disabled buttons are
 		// noise, not promises — they stay out.
 		if t.CanAnnotate() {
-			save := ui.Button(c, "").Label("Save").Tooltip("Save (Ctrl+S)").
+			save := ui.Button(c, "").Label("Save").Tooltip("Save (" + modKey + "S)").
 				Disabled(!t.Dirty)
 			save.Children(func() { ui.Icon(c, chromeIcons.save).FontSize(16) })
 			save.OnClick(func() { s.saveTab(t) })
 		}
 
-		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
+		search := ui.Button(c, "").Label("Search").Tooltip("Search (" + modKey + "F)")
 		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })
 		search.OnClick(func() { s.ShowSearchPanel = !s.ShowSearchPanel })
 
-		print := ui.Button(c, "").Label("Print").Tooltip("Print (Ctrl+P)")
+		print := ui.Button(c, "").Label("Print").Tooltip("Print (" + modKey + "P)")
 		print.Children(func() { ui.Icon(c, chromeIcons.printer).FontSize(16) })
 		print.OnClick(PrintActive)
 
