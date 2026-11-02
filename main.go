@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 
 	"github.com/egoist/mygo"
@@ -51,6 +52,16 @@ func main() {
 	}
 	app.SetState(state)
 	app.ApplyThemeAtStartup()
+
+	// macOS: menus in the system menu bar (menu.go), after the theme is
+	// settled so the Theme submenu's checkboxes build with the current
+	// mode. Windows keeps the inline menus of the integrated title bar —
+	// the Windows convention, and the reason the native menu was dropped
+	// there (a menu item without a role takes its key before the view
+	// sees it, which fought the window shortcuts).
+	if runtime.GOOS == "darwin" {
+		mygo.App.SetMenu(app.BuildMenu(state))
+	}
 
 	// The title bar's app icon (internal/app/titlebar.go), decoded before
 	// Run: DecodeBitmap needs no running app. The PNG is EMBEDDED in the
@@ -102,19 +113,26 @@ func main() {
 	})
 
 	mygo.App.WhenReady(func() {
-		// Hidden native title bar: the view draws the whole window and
-		// the native min/max/close buttons stay top-right, over the band
-		// internal/app's title bar leaves clear (its drag region and its
-		// inline menus replace the caption; the menus replace the native
-		// menu bar, whose accelerators survive as window shortcuts).
+		// Hidden native title bar on both platforms: the view draws the
+		// whole window and the native window controls stay over the band
+		// internal/app's title bar leaves clear. macOS additionally
+		// insets the traffic lights (TitleBarHiddenInset, top-left over
+		// the centered document title); Windows keeps min/max/close
+		// top-right over the band the inline title bar draws — its menus
+		// replace the native menu bar, whose accelerators survive as
+		// window shortcuts.
 		// 40 is tall enough for the icon, the menus and the name.
+		titleBarStyle := mygo.TitleBarHidden
+		if runtime.GOOS == "darwin" {
+			titleBarStyle = mygo.TitleBarHiddenInset
+		}
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:          "GoPDF",
 			Width:          1200,
 			Height:         800,
 			MinWidth:       800,
 			MinHeight:      600,
-			TitleBarStyle:  mygo.TitleBarHidden,
+			TitleBarStyle:  titleBarStyle,
 			TitleBarHeight: 40,
 			// Restores where the user left the window.
 			StateKey: "main",

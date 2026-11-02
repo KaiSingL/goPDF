@@ -1,10 +1,13 @@
-// titlebar.go renders the integrated title bar: the app icon, the inline
-// File / View / Go menus, and the drag region, drawn in the band the
-// window controls otherwise share (main.go creates the window with
-// mygo.TitleBarHidden, which hides the native title bar but keeps the
-// min/max/close buttons top-right). It replaces the native menu bar:
-// the menus live here now, while the keyboard shortcuts stay window-scope
-// in shortcuts.go, so every accelerator keeps working without a menu.
+// titlebar.go renders the title-bar band per platform. On Windows the
+// integrated bar draws the app icon, the inline File / View / Go menus
+// and the drag region in the band the window controls otherwise share
+// (main.go hides the native title bar but keeps the min/max/close
+// buttons top-right); the menus replace the native menu bar and the
+// keyboard shortcuts stay window-scope in shortcuts.go, so every
+// accelerator keeps working without a menu. On macOS the band follows
+// the Mac convention instead: TitleBarHiddenInset (main.go) insets the
+// traffic lights over the app's chrome, a centered document title fills
+// the band, and the menus live in the system menu bar (menu.go).
 //
 // API notes (verified against mygo v0.6.4 source):
 //   - c.TitleBar() is the room the window controls take (zero in windows
@@ -24,6 +27,7 @@ package app
 
 import (
 	"path/filepath"
+	"runtime"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -38,10 +42,53 @@ var appIcon *ui.Bitmap
 // before Run. Optional: without it the bar simply starts with the menus.
 func SetAppIcon(bm *ui.Bitmap) { appIcon = bm }
 
-// titleBarView renders the title bar row: the app icon (when set), then
-// the inline menus. The row is the drag handle everywhere except over its
-// menu buttons.
+// titleBarView renders the title-bar band for the platform: a centered
+// document title on macOS (the system menu bar owns the menus there),
+// the integrated icon-and-inline-menus bar on Windows. The switch is a
+// var so tests can pin either band on any OS.
+var centeredTitleOnMac = runtime.GOOS == "darwin"
+
 func titleBarView(c *ui.Context, s *AppState) {
+	if centeredTitleOnMac {
+		centeredTitleBar(c, s)
+		return
+	}
+	inlineTitleBar(c, s)
+}
+
+// windowTitle is the document name the band shows: the active tab's
+// title, or the app name while the launcher tab shows.
+func windowTitle(s *AppState) string {
+	if t := s.Active(); t != nil {
+		return t.Title
+	}
+	return "GoPDF"
+}
+
+// centeredTitleBar is the macOS band: TitleBarHiddenInset (main.go)
+// insets the traffic lights over the app's own chrome, the document
+// title centers in the band, and the whole band drags the window — no
+// icon and no inline menus, because the system menu bar owns File /
+// View / Go on macOS (menu.go).
+func centeredTitleBar(c *ui.Context, s *AppState) {
+	th := c.Theme()
+	// The band is 32 high at minimum (headless tests and full screen
+	// report no band, as for the inline bar); bar.Left clears the
+	// traffic lights on the left, and bar.Right is zero — a Mac window
+	// keeps no buttons on the right of the band.
+	bar := c.TitleBar()
+	ui.Row(c).Height(max(bar.Height, 32)).
+		Padding(0, bar.Right, 0, bar.Left).
+		Center().DragWindow().
+		Children(func() {
+			ui.Text(c, windowTitle(s)).FontSize(13).TextColor(th.Text)
+		})
+}
+
+// inlineTitleBar renders the Windows title bar row: the app icon (when
+// set), then the inline menus. The row is the drag handle everywhere
+// except over its menu buttons.
+func inlineTitleBar(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	// The row fills the title-bar band and clears the window buttons on
 	// the right (bar.Left is the macOS traffic lights' inset). 32 is the

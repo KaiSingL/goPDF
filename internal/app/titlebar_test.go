@@ -13,15 +13,19 @@ import (
 	"image"
 	"image/png"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
 )
 
-// titleView shows only the title bar.
+// titleView shows only the inline (Windows) title bar. The tests here
+// pin that bar's composition and menus — the Windows convention, built
+// the same on every test platform — while the macOS band has its own
+// tests (centered_titlebar_test.go).
 func titleView(s *AppState) func(*ui.Context) {
-	return func(c *ui.Context) { titleBarView(c, s) }
+	return func(c *ui.Context) { inlineTitleBar(c, s) }
 }
 
 // winButtons is the room the window controls take on Windows with
@@ -182,8 +186,12 @@ func TestTitleBarGoMenu(t *testing.T) {
 }
 
 // TestTitleBarInRootView checks the composition order: the real root view
-// builds the title bar (its menus) before everything else.
+// builds the title bar (its menus) before everything else. The Windows
+// composition is pinned on any OS; the macOS band has its own tests
+// (centered_titlebar_test.go).
 func TestTitleBarInRootView(t *testing.T) {
+	centeredTitleOnMac = false
+	t.Cleanup(func() { centeredTitleOnMac = runtime.GOOS == "darwin" })
 	s := chromeState(1)
 	tt := ui.NewTester(s.View, 1000, 700)
 	for _, want := range []string{"File", "View", "Go"} {

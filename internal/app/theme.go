@@ -48,6 +48,9 @@ func ApplyTheme() {
 	if mygo.App.IsReady() {
 		setThemeSource(themeSource())
 	}
+	// The native menu's Theme checkboxes follow, whichever surface made
+	// the change (palette, inline menus, the macOS View menu itself).
+	syncThemeMenu()
 }
 
 // ApplyThemeAtStartup applies the mode before App.Run so the app opens in
