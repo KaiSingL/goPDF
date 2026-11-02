@@ -71,25 +71,57 @@ const (
 	titleMaxWide = 140
 )
 
-// tabBar renders the tab strip: one tab per s.Tabs (title, close button,
-// active state), a "+" button opening a launcher tab (drop files or click
-// open, like the empty state), double-click on empty strip space doing the
-// same, and middle-click/Close on a tab calling s.CloseTab.
+// tabBar renders the tab strip row (Windows): one tab per s.Tabs
+// (title, close button, active state), a "+" button opening a launcher
+// tab (drop files or click open, like the empty state), double-click on
+// empty strip space doing the same, and middle-click/Close on a tab
+// calling s.CloseTab.
 func tabBar(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	ui.Row(c).Height(tabBarHeight).PaddingX(th.Space(2)).Gap(th.Space(0.5)).AlignItems(ui.Center).Children(func() {
-		for _, t := range s.Tabs {
-			tabButton(c, s, t)
-		}
-		plus := ui.Button(c, "").Label("New tab").Tooltip("Open a launcher tab: drop a PDF or click open")
-		plus.Children(func() { ui.Icon(c, chromeIcons.plus).FontSize(16) })
-		plus.OnClick(func() { s.NewEmptyTab() })
-		// The rest of the strip: double-click opens a launcher tab too.
-		rest := ui.Box(c).Grow(1).Height(tabBarHeight)
-		if rest.DoubleClicked() {
-			s.NewEmptyTab()
-		}
+		tabStrip(c, s, true)
 	})
+}
+
+// tabStrip is the tab row's content, shared by the Windows strip row
+// (tabBar) and the macOS merged band (macTabBar): the tabs, the "+"
+// button, and the rest of the strip. With launcherOnRest a double-click
+// on that rest opens a launcher tab — the Windows affordance; the macOS
+// band instead leaves its stretches pointer-silent so the row drags the
+// window and the host's double-click maximizes, the launcher staying on
+// the "+" button.
+func tabStrip(c *ui.Context, s *AppState, launcherOnRest bool) {
+	for _, t := range s.Tabs {
+		tabButton(c, s, t)
+	}
+	plus := ui.Button(c, "").Label("New tab").Tooltip("Open a launcher tab: drop a PDF or click open")
+	plus.Children(func() { ui.Icon(c, chromeIcons.plus).FontSize(16) })
+	plus.OnClick(func() { s.NewEmptyTab() })
+	// The rest of the strip: double-click opens a launcher tab too
+	// (Windows only — see launcherOnRest).
+	rest := ui.Box(c).Grow(1).Height(tabBarHeight)
+	if launcherOnRest && rest.DoubleClicked() {
+		s.NewEmptyTab()
+	}
+}
+
+// macTabBar is the macOS band with the tab strip merged into it: with
+// TitleBarHiddenInset (main.go) the traffic lights sit over this row's
+// left edge, so it pads clear of them and its empty stretches drag the
+// window — there is no separate title band, no icon and no document
+// title, Chrome-style. Presses on tabs, the "+" and the close buttons
+// stay interactive: only the innermost pointer target decides, so a
+// press on a tab selects it instead of dragging, while the stretches
+// and the gaps drag (the inline bar's idiom, titlebar.go).
+func macTabBar(c *ui.Context, s *AppState) {
+	th := c.Theme()
+	bar := c.TitleBar()
+	ui.Row(c).Height(max(bar.Height, tabBarHeight)).
+		Padding(0, bar.Right, 0, bar.Left).
+		Gap(th.Space(0.5)).AlignItems(ui.Center).DragWindow().
+		Children(func() {
+			tabStrip(c, s, false)
+		})
 }
 
 // tabButton renders one tab. Deferred OnClick actions keep mutations of

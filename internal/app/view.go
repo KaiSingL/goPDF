@@ -64,10 +64,17 @@ func (s *AppState) View(c *ui.Context) {
 	// content row grows into the rest. Dividers separate the bands and the
 	// sidebar from the viewer so the chrome doesn't read as one surface.
 	ui.Column(c).Fill().Children(func() {
-		titleBarView(c, s) // title bar: app icon, File/View/Go, drag region
-		ui.Divider(c)      // ─ under the title bar
-		tabBar(c, s)       // C: browser-style tab strip
-		ui.Divider(c)      // ─ under the tab strip
+		if mergedTabBand {
+			// macOS: the traffic lights sit in the strip itself — band and
+			// tab strip are one row (tabs.go's macTabBar), no separate
+			// title band under the system menu bar.
+			macTabBar(c, s)
+		} else {
+			inlineTitleBar(c, s) // title bar: app icon, File/View/Go, drag region
+			ui.Divider(c)        // ─ under the title bar
+			tabBar(c, s)         // C: browser-style tab strip
+		}
+		ui.Divider(c) // ─ under the tab strip
 		// The toolbar band: only for a document tab — a launcher tab shows
 		// the same chrome as the initial no-tabs state (tab strip, then
 		// straight to the launcher content). The go-to popover anchors to

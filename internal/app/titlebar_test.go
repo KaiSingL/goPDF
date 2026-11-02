@@ -190,8 +190,8 @@ func TestTitleBarGoMenu(t *testing.T) {
 // composition is pinned on any OS; the macOS band has its own tests
 // (centered_titlebar_test.go).
 func TestTitleBarInRootView(t *testing.T) {
-	centeredTitleOnMac = false
-	t.Cleanup(func() { centeredTitleOnMac = runtime.GOOS == "darwin" })
+	mergedTabBand = false
+	t.Cleanup(func() { mergedTabBand = runtime.GOOS == "darwin" })
 	s := chromeState(1)
 	tt := ui.NewTester(s.View, 1000, 700)
 	for _, want := range []string{"File", "View", "Go"} {
