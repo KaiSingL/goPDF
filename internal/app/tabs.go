@@ -64,11 +64,20 @@ var chromeIcons = struct {
 }
 
 // tabBarHeight and tabHeight size the strip (spec §4: browser-style).
+// MacTabBandHeight is the macOS merged band (the traffic lights' row IS
+// the tab strip): slimmer than the Windows 40, Chrome-like, and what
+// main.go declares as the window's TitleBarHeight on darwin so the
+// declared band matches the row.
 const (
 	tabBarHeight = 40
 	tabHeight    = 30
 	tabMaxWidth  = 200
 	titleMaxWide = 140
+
+	MacTabBandHeight = 34
+	// macTabGap is the breathing room between the traffic lights and the
+	// first tab (bar.Left alone only just clears the zoom button).
+	macTabGap = 14
 )
 
 // tabBar renders the tab strip row (Windows): one tab per s.Tabs
@@ -116,8 +125,8 @@ func tabStrip(c *ui.Context, s *AppState, launcherOnRest bool) {
 func macTabBar(c *ui.Context, s *AppState) {
 	th := c.Theme()
 	bar := c.TitleBar()
-	ui.Row(c).Height(max(bar.Height, tabBarHeight)).
-		Padding(0, bar.Right, 0, bar.Left).
+	ui.Row(c).Height(max(bar.Height, MacTabBandHeight)).
+		Padding(0, bar.Right, 0, bar.Left+macTabGap).
 		Gap(th.Space(0.5)).AlignItems(ui.Center).DragWindow().
 		Children(func() {
 			tabStrip(c, s, false)

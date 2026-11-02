@@ -121,10 +121,13 @@ func main() {
 		// top-right over the band the inline title bar draws — its menus
 		// replace the native menu bar, whose accelerators survive as
 		// window shortcuts.
-		// 40 is tall enough for the icon, the menus and the name.
+		// 40 is the Windows band (icon + inline menus); on macOS the
+		// band is the merged strip row and slimmer.
 		titleBarStyle := mygo.TitleBarHidden
+		titleBarHeight := 40
 		if runtime.GOOS == "darwin" {
 			titleBarStyle = mygo.TitleBarHiddenInset
+			titleBarHeight = app.MacTabBandHeight
 		}
 		win = mygo.NewWindow(mygo.WindowOptions{
 			Title:          "GoPDF",
@@ -133,7 +136,7 @@ func main() {
 			MinWidth:       800,
 			MinHeight:      600,
 			TitleBarStyle:  titleBarStyle,
-			TitleBarHeight: 40,
+			TitleBarHeight: titleBarHeight,
 			// Restores where the user left the window.
 			StateKey: "main",
 			// The window shows the interface MyGo draws, not a web page.
