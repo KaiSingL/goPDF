@@ -71,20 +71,29 @@ func (f *pdfFile) obj(num int, body string) {
 }
 
 // finish appends the xref table and trailer (with extra trailer entries,
-// e.g. "/Info 9 0 R ") and returns the complete file bytes.
+// e.g. "/Info 9 0 R ") and returns the complete file bytes. The %PDF-1.4
+// header is prepended here — without it MuPDF only opens the file through
+// its repair path, which rejects incremental saves and defeats content-type
+// sniffing for NewFromMemory.
 func (f *pdfFile) finish(extra string) []byte {
-	xref := f.buf.Len()
-	fmt.Fprintf(&f.buf, "xref\n0 %d\n", f.maxObj+1)
-	f.buf.WriteString("0000000000 65535 f \n")
+	const header = "%PDF-1.4\n"
+	xref := len(header) + f.buf.Len()
+	var xb bytes.Buffer
+	fmt.Fprintf(&xb, "xref\n0 %d\n", f.maxObj+1)
+	xb.WriteString("0000000000 65535 f \n")
 	for i := 1; i <= f.maxObj; i++ {
 		if off, ok := f.offsets[i]; ok {
-			fmt.Fprintf(&f.buf, "%010d 00000 n \n", off)
+			fmt.Fprintf(&xb, "%010d 00000 n \n", off+len(header))
 		} else {
-			f.buf.WriteString("0000000000 65535 f \n")
+			xb.WriteString("0000000000 65535 f \n")
 		}
 	}
-	fmt.Fprintf(&f.buf, "trailer\n<< /Size %d /Root 1 0 R %s>>\nstartxref\n%d\n%%%%EOF\n", f.maxObj+1, extra, xref)
-	return f.buf.Bytes()
+	fmt.Fprintf(&xb, "trailer\n<< /Size %d /Root 1 0 R %s>>\nstartxref\n%d\n%%%%EOF\n", f.maxObj+1, extra, xref)
+	out := make([]byte, 0, len(header)+f.buf.Len()+xb.Len())
+	out = append(out, header...)
+	out = append(out, f.buf.Bytes()...)
+	out = append(out, xb.Bytes()...)
+	return out
 }
 
 // pageObjNum is the object number of page i (pages start at object 3, in

@@ -24,6 +24,10 @@ type Document struct {
 	doc    *fzDocument
 	mtx    sync.Mutex
 	stream *fzStream
+
+	// GoPDF patch: file the document was opened from ("" for memory
+	// documents), mirroring the cgo build.
+	path string
 }
 
 // New returns new fitz document.
@@ -55,6 +59,7 @@ func New(filename string) (f *Document, err error) {
 		err = ErrOpenDocument
 		return
 	}
+	f.path = filename
 
 	ret := fzNeedsPassword(f.ctx, f.doc)
 	v := int(ret) != 0

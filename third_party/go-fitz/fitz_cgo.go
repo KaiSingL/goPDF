@@ -218,6 +218,11 @@ type Document struct {
 	mtx    sync.Mutex
 	stream *C.fz_stream
 
+	// GoPDF patch: file the document was opened from ("" for memory
+	// documents), so Save can enforce incremental-saves-target-the-open-file
+	// and make cross-path saves atomic.
+	path string
+
 	// GoPDF patch: structured text of the last few pages SelectionQuads
 	// touched, so drag updates reuse one extraction (f.mtx guards it, as
 	// every Document use).
@@ -257,6 +262,7 @@ func New(filename string) (f *Document, err error) {
 		err = ErrOpenDocument
 		return
 	}
+	f.path = filename
 
 	ret := C.fz_needs_password(f.ctx, f.doc)
 	v := int(ret) != 0
@@ -854,6 +860,8 @@ func (f *Document) ToC() ([]Outline, error) {
 func (f *Document) Metadata() map[string]string {
 	data := make(map[string]string)
 
+	// GoPDF patch: GoString the NUL-terminated C buffer — string(buf)
+	// kept every trailing zero byte of the 256-byte scratch space.
 	lookup := func(key string) string {
 		ckey := C.CString(key)
 		defer C.free(unsafe.Pointer(ckey))
@@ -861,7 +869,7 @@ func (f *Document) Metadata() map[string]string {
 		buf := make([]byte, 256)
 		C.fz_lookup_metadata(f.ctx, f.doc, ckey, (*C.char)(unsafe.Pointer(&buf[0])), C.size_t(len(buf)))
 
-		return string(buf)
+		return C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
 	}
 
 	data["format"] = lookup("format")
