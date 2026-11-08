@@ -25,6 +25,7 @@ import "github.com/egoist/mygo/ui"
 var chromeIcons = struct {
 	close, plus, minus, back, forward, reload, search, more, moon, sun, monitor, panel, printer *ui.SVG
 	chevDown, chevUp, chevLeft, chevRight                                                       *ui.SVG
+	highlighter, underline, strikeout                                                           *ui.SVG
 }{
 	close:   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`)),
 	plus:    ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>`)),
@@ -47,6 +48,11 @@ var chromeIcons = struct {
 	chevUp:    ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>`)),
 	chevLeft:  ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`)),
 	chevRight: ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`)),
+	// The annotation tools (annotate.go, issue 3) — lucide's
+	// "highlighter", "underline" and "strikethrough".
+	highlighter: ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4Z"/></svg>`)),
+	underline:   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v6a6 6 0 0 0 12 0V4"/><path d="M4 20h16"/></svg>`)),
+	strikeout:   ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4c-2.5 0-4.5 1.5-4.5 3.5 0 .6.2 1.2.5 1.7"/><path d="M18.5 5.5A6 6 0 0 0 7 9"/><path d="M12.5 20c3.7 0 6-1.8 6-4 0-1.1-.5-2-1.4-2.7"/><path d="M6.5 18.5A6 6 0 0 0 18 15"/><path d="M4 12h16"/></svg>`)),
 }
 
 // tabBarHeight and tabHeight size the strip (spec §4: browser-style).

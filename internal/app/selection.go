@@ -118,7 +118,10 @@ func (s *AppState) ExtendSelection(t *Tab, page int, x, y float32) {
 
 // FinishSelection ends the drag. A click — a press/release that moved
 // less than a couple of points — clears instead: taps should not leave
-// stray empty selections lying around.
+// stray empty selections lying around. With a markup tool armed, the
+// finished selection becomes the annot (annotate.go) when the exact
+// quads have resolved; the reply hop covers a release that beat the
+// last quads.
 func (s *AppState) FinishSelection(t *Tab) {
 	if t == nil || !t.Sel.Dragging {
 		return
@@ -127,7 +130,9 @@ func (s *AppState) FinishSelection(t *Tab) {
 	x0, y0, x1, y1 := t.selRectPts()
 	if x1-x0 < 2 && y1-y0 < 2 {
 		t.ClearSelection()
+		return
 	}
+	s.maybeCreateMarkup(t)
 }
 
 // ClearSelection drops the selection (Esc, a click, a new drag).
@@ -156,6 +161,9 @@ func (s *AppState) requestSelection(t *Tab) {
 			cur.Sel.Quads = res.Quads
 			cur.Sel.Text = res.Text
 			cur.Sel.resolved = true
+			// The release may have beaten this reply: if a markup tool
+			// was armed and the drag is over, this is its moment.
+			s.maybeCreateMarkup(cur)
 		})
 	})
 }

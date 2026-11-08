@@ -90,6 +90,21 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 		next.Children(func() { ui.Icon(c, chromeIcons.chevRight).FontSize(16) })
 		next.OnClick(nextPage(s))
 
+		// Section 3.5 — annotations (issue 3): visible only while the
+		// document permits them (Tab.CanAnnotate, the open-time
+		// permission snapshot from issue 2). The markup buttons arm a
+		// pending mode the next text selection consumes (annotate.go);
+		// note and square arrive with commit 2.
+		if t.CanAnnotate() {
+			ui.Divider(c)
+			annotToolButton(c, s, t, AnnotToolHighlight,
+				"Highlight (Ctrl+Shift+H), then select text", chromeIcons.highlighter)
+			annotToolButton(c, s, t, AnnotToolUnderline,
+				"Underline (Ctrl+Shift+U), then select text", chromeIcons.underline)
+			annotToolButton(c, s, t, AnnotToolStrikeout,
+				"Strikeout (Ctrl+Shift+K), then select text", chromeIcons.strikeout)
+		}
+
 		// The spacer absorbs the leftover width, keeping the right section
 		// flush right instead of everything piling onto the left (ui.Spacer
 		// is ui.Toolbar's own mechanism for this).

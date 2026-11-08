@@ -119,9 +119,10 @@ type Tab struct {
 	History []HistoryEntry // back stack (oldest first)
 	Future  []HistoryEntry // forward stack
 
-	Search  SearchState
-	Sel     SelectionState
-	Outline []pdf.OutlineNode
+	Search   SearchState
+	Sel      SelectionState
+	Annot    AnnotState // annotation tools (annotate.go); UI thread only
+	Outline  []pdf.OutlineNode
 
 	// Cache holds rendered page images; thread-safe (see pdf.PageCache).
 	Cache *pdf.PageCache

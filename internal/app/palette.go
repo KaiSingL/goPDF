@@ -222,6 +222,18 @@ func rebuildPalette(s *AppState) {
 			t.RotateBy()
 		}
 	})
+	// Annotation tools (annotate.go, issue 3): only while the active tab
+	// permits them; the run closures re-check at execution time.
+	if at := s.Active(); at != nil && at.CanAnnotate() {
+		for _, k := range []AnnotToolKind{AnnotToolHighlight, AnnotToolUnderline, AnnotToolStrikeout} {
+			kind := k
+			cmd("Annotate: "+annotToolLabel(kind), func() {
+				if cur := s.Active(); cur != nil && cur.Doc != nil && cur.CanAnnotate() {
+					s.ToggleAnnotTool(cur, kind)
+				}
+			})
+		}
+	}
 	cmd("Close Tab", func() { s.CloseActiveTab() })
 	addSection("Commands", cmds)
 
