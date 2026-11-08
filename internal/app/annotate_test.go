@@ -407,14 +407,17 @@ func TestAnnotDeleteFromContextPanel(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	id := tab.Annot.Listed[0][0].ID
-	_ = id // the selected annot's identity is asserted via the panel below
 
-	// Open the panel by clicking the annot, then Delete via the KEY
-	// (the button path is the same call).
+	// Open the panel by clicking the annot (a click, since it opens at
+	// release), then Delete via the KEY (the button path is the same
+	// call). The panel must be attached to THAT annot.
 	tt.Press(600, 400)
 	tt.Release(600, 400)
 	if !tab.Annot.SelOpen {
 		t.Fatal("context panel did not open")
+	}
+	if tab.Annot.SelID != id {
+		t.Fatalf("context panel annot: %d, want the clicked annot %d", tab.Annot.SelID, id)
 	}
 	tt.Key(0, ui.KeyDelete)
 	tt.Frame()

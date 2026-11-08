@@ -10,7 +10,9 @@
 // facade decides the mechanics: an atomic sibling-temp + rename on POSIX,
 // demoted to an incremental save on Windows; the app does not care. A
 // foreign path (Save-As) takes the fork's own atomic temp+rename, which
-// is what leaves the ORIGINAL file untouched.
+// is what leaves the ORIGINAL file untouched. (The other fitz touch here
+// is the zero-value SaveOptions the facade signatures ask for: internal/app
+// stays at the facade boundary, see annotate.go's seam note.)
 //
 // SaveOptions stays zero-value on purpose: the fork's EditAnnot
 // regenerates annotation appearances on every edit (verified in the

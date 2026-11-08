@@ -26,6 +26,9 @@ package pdf
 //
 //   - NumPages, PageSize, PageOrigin and Outline return post-edit values
 //     (annotation calls skip the re-sync: they change no page geometry).
+//     This covers EVERY Add*Async annotation call (AddHighlightAsync,
+//     AddUnderlineAsync, AddStrikeoutAsync, AddTextAsync, AddFreeTextAsync,
+//     AddSquareAsync) — markup creators share one lane and callback shape.
 //   - Any AnnotsAsync, RenderAsync, SelectionAsync or SearchQuadsAsync
 //     issued after that callback observes the edited document. Doc keeps
 //     no bitmap cache; RenderAsync always rasterizes live worker state.

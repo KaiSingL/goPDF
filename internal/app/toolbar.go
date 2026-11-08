@@ -115,17 +115,19 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 		// is ui.Toolbar's own mechanism for this).
 		ui.Spacer(c)
 
-		// Section 4 — flush right: save (save.go; disabled on clean
-		// documents, plain reads never touch the file), search (it
-		// toggles the right-side results panel, searchpanel.go), print
-		// (the same PrintActive as Ctrl+P and the File menu) and the
-		// more menu. Share and comment are v1 non-goals (spec §2), and
-		// permanently disabled buttons are noise, not promises — they
-		// stay out.
-		save := ui.Button(c, "").Label("Save").Tooltip("Save (Ctrl+S)").
-			Disabled(!t.Dirty)
-		save.Children(func() { ui.Icon(c, chromeIcons.save).FontSize(16) })
-		save.OnClick(func() { s.saveTab(t) })
+		// Section 4 — flush right: save (save.go; OFF for documents that
+		// cannot mutate — a denied-annotate doc can never become dirty),
+		// search (it toggles the right-side results panel,
+		// searchpanel.go), print (the same PrintActive as Ctrl+P and the
+		// File menu) and the more menu. Share and comment are v1
+		// non-goals (spec §2), and permanently disabled buttons are
+		// noise, not promises — they stay out.
+		if t.CanAnnotate() {
+			save := ui.Button(c, "").Label("Save").Tooltip("Save (Ctrl+S)").
+				Disabled(!t.Dirty)
+			save.Children(func() { ui.Icon(c, chromeIcons.save).FontSize(16) })
+			save.OnClick(func() { s.saveTab(t) })
+		}
 
 		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
 		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })

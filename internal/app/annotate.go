@@ -28,9 +28,11 @@
 // facade contract):
 //   - pdf.AddHighlightAsync/AddUnderlineAsync/AddStrikeoutAsync take
 //     []fitz.Quad in fz_quad corner order; selection quads are HitRects
-//     (a rect per quad), so hitQuads converts corners 1:1. This is the
-//     one place internal/app imports the fork: the facade's own markup
-//     signatures speak fitz types.
+//     (a rect per quad), so hitQuads converts corners 1:1. internal/app
+//     touches fitz types ONLY at the facade boundary — Quad/Rect/Point/
+//     AnnotType for markup creation and listings (annotate.go), and
+//     SaveOptions for saves (save.go): every field is a facade
+//     signature's own type.
 //   - The facade's freshness contract: a render issued after a mutation
 //     callback observes the edit, so Reload from inside the callback hop
 //     is ordered correctly by construction.
@@ -43,6 +45,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 	"github.com/gen2brain/go-fitz"
@@ -115,9 +118,10 @@ type AnnotState struct {
 	Tool AnnotToolKind
 
 	// Note placement: the click landed, the inline editor is up.
-	NoteOpen bool
-	NotePage int
-	NotePt   [2]float64 // page space, clamped inside the page box
+	NoteOpen  bool
+	NotePage  int
+	NotePt    [2]float64 // page space, clamped inside the page box
+	NoteDraft string     // the editor's per-tab draft text
 
 	// Square drag (page space, clamped inside the page box).
 	SquareDrag   bool
@@ -132,6 +136,9 @@ type AnnotState struct {
 	// and rotation are inherently fresh.
 	Listed      map[int][]pdf.PageAnnot
 	listPending map[int]bool // an AnnotsAsync is in flight
+	// listErrBackoff: pages whose listing errored recently; re-requesting
+	// per frame would ping-pong a persistently failing page.
+	listErrBackoff map[int]time.Time
 
 	// The context panel (click an existing annot): SelOpen drives the
 	// modal, the other fields identify the annot.
@@ -219,21 +226,22 @@ func (s *AppState) PlaceNote(t *Tab, page int, x, y float32) {
 }
 
 // noteRect is the placed anchor's rect in page space: noteAnchorW wide,
-// noteAnchorH tall, centered on the click point and clamped inside the
-// page box.
+// noteAnchorH tall, horizontally centered on the click point and clamped
+// inside the page box (the click's point is the rect's TOP edge, not its
+// center, so an edge clamped click still yields an anchored, non-degenerate
+// rect).
 func (t *Tab) noteRect() fitz.Rect {
 	px, py := t.Annot.NotePt[0], t.Annot.NotePt[1]
 	w0, h0 := t.Doc.PageSize(t.Annot.NotePage)
 	ox, oy := t.Doc.PageOrigin(t.Annot.NotePage)
-	r := fitz.Rect{
+	// Clamp the click first so the rect's own clamp cannot collapse the
+	// height on bottom-edge clicks.
+	py = min(max(py, oy), oy+h0-noteAnchorH)
+	px = min(max(px, ox+noteAnchorW/2), ox+w0-noteAnchorW/2)
+	return fitz.Rect{
 		X0: px - noteAnchorW/2, Y0: py,
 		X1: px + noteAnchorW/2, Y1: py + noteAnchorH,
 	}
-	r.X0 = max(r.X0, ox)
-	r.Y0 = max(r.Y0, oy)
-	r.X1 = min(r.X1, ox+w0)
-	r.Y1 = min(r.Y1, oy+h0)
-	return r
 }
 
 // commitNote creates the sticky note from the editor's text and closes
@@ -243,8 +251,8 @@ func (s *AppState) commitNote(t *Tab) {
 		return
 	}
 	t.Annot.NoteOpen = false
-	note := strings.TrimSpace(noteValue)
-	noteValue = ""
+	note := strings.TrimSpace(t.Annot.NoteDraft)
+	t.Annot.NoteDraft = ""
 	if note == "" || t.Doc == nil {
 		return // empty Enter cancels the placement
 	}
@@ -254,16 +262,15 @@ func (s *AppState) commitNote(t *Tab) {
 	t.Doc.AddTextAsync(page, rect, note, done)
 }
 
-// The note editor's field storage and open-edge flag (the password
-// prompt's pwValue/pwOpenSeen pattern): notePlaced marks a fresh
-// placement so the overlay starts an empty field, and any dismissal
-// (Escape, backdrop, Cancel) leaves the flag down while NoteOpen is
-// still set for a build — the sweep converts that into a dropped
-// placement.
-var (
-	noteValue  string
-	notePlaced bool
-)
+// The note editor's per-tab draft lives on the tab (Tab.Annot.NoteDraft,
+// bound by the password prompt's pwValue pattern but scoped to the tab:
+// several tabs can hold placements at once and tab switches must not
+// silently wipe a half-typed draft); notePlaced marks a fresh placement
+// so the overlay starts an empty field only for THAT tab, and any
+// dismissal (Escape, backdrop, Cancel) leaves the flag down while
+// NoteOpen is still set for a build — the sweep converts that into a
+// dropped placement.
+var notePlaced bool
 
 // noteEditorOverlay renders the sticky-note editor while the active tab
 // has a placement open. ui.Modal handles Escape and click-outside by
@@ -274,15 +281,12 @@ var (
 func noteEditorOverlay(c *ui.Context, s *AppState) {
 	t := s.Active()
 	if t == nil || !t.Annot.NoteOpen {
-		if t != nil {
-			t.Annot.NoteOpen = false // sweep: dismissed, placement dropped
-		}
 		notePlaced = false
 		return
 	}
-	if notePlaced { // opened since the last build: fresh field
+	if notePlaced { // opened since the last build: fresh field, per tab
 		notePlaced = false
-		noteValue = ""
+		t.Annot.NoteDraft = ""
 	}
 	ui.Modal(c, &t.Annot.NoteOpen, func() { noteEditorPanel(c, s, t) })
 }
@@ -296,7 +300,7 @@ func noteEditorPanel(c *ui.Context, s *AppState, t *Tab) {
 		ui.Text(c, "Sticky note").Bold().FontSize(th.FontSize * 1.15)
 		ui.Text(c, fmt.Sprintf("Page %d", t.Annot.NotePage+1)).
 			TextColor(th.TextMuted).FontSize(th.FontSize * 0.9).SingleLine()
-		in := ui.TextInput(c, &noteValue).
+		in := ui.TextInput(c, &t.Annot.NoteDraft).
 			Placeholder("Note text (empty cancels)").AutoFocus()
 		ui.Row(c).FillWidth().Justify(ui.End).Gap(th.Space(1)).Children(func() {
 			if ui.Button(c, "Cancel").Clicked() {
@@ -419,6 +423,9 @@ func (s *AppState) requestAnnots(t *Tab, page int) {
 	if t.Annot.listPending == nil {
 		t.Annot.listPending = map[int]bool{}
 	}
+	if backoff, ok := t.Annot.listErrBackoff[page]; ok && time.Now().Before(backoff) {
+		return // a recent listing error: hold off rather than ping-pong per frame
+	}
 	if _, ok := t.Annot.Listed[page]; ok {
 		return // have it
 	}
@@ -440,7 +447,14 @@ func (s *AppState) requestAnnots(t *Tab, page int) {
 				return // a mutation superseded this listing; the next build re-requests
 			}
 			if err != nil {
-				return // transient (page raced a structure edit): retry on the next build
+				// Transient by construction (a page raced a structure
+				// edit); back off 30s so a persistently failing listing
+				// cannot re-request on every scroll frame.
+				if cur.Annot.listErrBackoff == nil {
+					cur.Annot.listErrBackoff = map[int]time.Time{}
+				}
+				cur.Annot.listErrBackoff[page] = time.Now().Add(30 * time.Second)
+				return
 			}
 			cur.Annot.Listed[page] = as
 			if window != nil {

@@ -129,6 +129,18 @@ func (s *AppState) FinishSelection(t *Tab) {
 	t.Sel.Dragging = false
 	x0, y0, x1, y1 := t.selRectPts()
 	if x1-x0 < 2 && y1-y0 < 2 {
+		// A click, not a drag: an existing annot under the release point
+		// opens its context panel (annotate.go) instead of leaving a
+		// stray empty selection behind — the viewer's PointerDown always
+		// starts the drag, so that is the ONLY hook annot inspection gets
+		// without paying the copy-drag path.
+		page := t.Sel.Page
+		a := annotAt(t, page, (x0+x1)/2, (y0+y1)/2)
+		if a != nil && t.CanAnnotate() && t.Annot.Tool == AnnotToolNone {
+			t.ClearSelection()
+			s.selectAnnot(t, page, a)
+			return
+		}
 		t.ClearSelection()
 		return
 	}

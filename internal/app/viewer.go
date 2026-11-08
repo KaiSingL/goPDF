@@ -587,17 +587,11 @@ func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
 	}
 	switch {
 	case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
-		// An existing annot under the pointer opens its context panel
-		// instead of starting a selection (annotate.go). No tool may be
-		// armed — an armed tool's gesture comes first above.
-		if t.CanAnnotate() && t.Annot.Tool == AnnotToolNone {
-			k := pageDipScale(t, i, t.Zoom)
-			px, py := dipToPagePt(t, i, k, ev.X, ev.Y)
-			if a := annotAt(t, i, px, py); a != nil {
-				s.selectAnnot(t, i, a)
-				return true
-			}
-		}
+		// The press always starts a selection (moving on marks it): a
+		// click that lands on an existing annot opens its context panel
+		// at release, in FinishSelection's click branch, so copy drags
+		// still start anywhere (annotate.go). No tool may be armed — an
+		// armed tool's gesture comes first above.
 		s.StartSelection(t, i, ev.X, ev.Y)
 		return true
 	case ev.Kind == ui.InputPointerMove && t.Sel.Dragging && t.Sel.Page == i:

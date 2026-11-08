@@ -282,8 +282,8 @@ func TestRecentThumbForQueue(t *testing.T) {
 
 // TestThumbPNGDirCap: writes past thumbPNGCap delete the oldest files.
 func TestThumbPNGDirCap(t *testing.T) {
-	dir := t.TempDir()      // the cache
-	srcs := t.TempDir()     // documents live OUTSIDE the cache dir
+	dir := t.TempDir()  // the cache
+	srcs := t.TempDir() // documents live OUTSIDE the cache dir
 	old := ThumbsDir
 	ThumbsDir = func() (string, error) { return dir, nil }
 	t.Cleanup(func() { ThumbsDir = old })
