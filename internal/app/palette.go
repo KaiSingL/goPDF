@@ -236,6 +236,18 @@ func rebuildPalette(s *AppState) {
 		}
 	}
 	cmd("Close Tab", func() { s.CloseActiveTab() })
+	// Saving (save.go, issue 3): Save only while there is something to
+	// write; the run closures re-check at execution time.
+	if at := s.Active(); at != nil && at.Dirty {
+		cmd("Save Document", func() {
+			if cur := s.Active(); cur != nil && cur.Doc != nil {
+				s.saveTab(cur)
+			}
+		})
+	}
+	if at := s.Active(); at != nil && at.Doc != nil {
+		cmd("Save As…", func() { s.saveActiveAs() })
+	}
 	addSection("Commands", cmds)
 
 	// Pages: a "Page N" jump when the query is a number, and stepping.

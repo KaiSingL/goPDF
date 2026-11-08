@@ -118,6 +118,17 @@ func titleFileMenu(c *ui.Context, s *AppState) {
 			}
 		})
 		m.Separator()
+		// Saving (save.go, issue 3): Save is disabled on clean documents
+		// (plain reads never touch the file); Save As always available
+		// for an open document.
+		saveIt := m.Item("Save").Disabled(s.Active() == nil || !s.Active().Dirty)
+		if saveIt.Chosen() {
+			if t := s.Active(); t != nil {
+				s.saveTab(t)
+			}
+		}
+		menuItem(m, "Save As…", func() { s.saveActiveAs() })
+		m.Separator()
 		menuItem(m, "Print…", PrintActive)
 		menuItem(m, "Document Properties", func() {
 			s.ShowProperties = s.Active() != nil

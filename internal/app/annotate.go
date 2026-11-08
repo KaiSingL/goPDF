@@ -143,8 +143,7 @@ type AnnotState struct {
 
 // ToggleAnnotTool arms k as the tab's pending tool, or disarms it when k
 // is already armed (the toolbar buttons and shortcuts toggle). Arming a
-// different kind replaces the armed one. Notes and squares arriving with
-// commit 2 arm the same way.
+// different kind replaces the armed one.
 func (s *AppState) ToggleAnnotTool(t *Tab, k AnnotToolKind) {
 	if t == nil {
 		return
@@ -177,6 +176,7 @@ func (s *AppState) annotDone(t *Tab, what string) func(error) {
 					filepath.Base(cur.Path), what, err)
 				return
 			}
+			cur.Dirty = true // unsaved edits: the tab label's bullet (save.go)
 			cur.Reload()
 			if window != nil {
 				window.Invalidate()

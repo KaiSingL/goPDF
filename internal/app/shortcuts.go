@@ -105,6 +105,15 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyU, armAnnotTool(s, AnnotToolUnderline))
 	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyK, armAnnotTool(s, AnnotToolStrikeout))
 
+	// Saving (save.go): Ctrl+S same-path, Ctrl+Shift+S Save-As through
+	// the native picker. Both are clear of every other binding.
+	c.OnShortcut(ui.Ctrl, ui.KeyS, func() {
+		if t := s.Active(); t != nil {
+			s.saveTab(t)
+		}
+	})
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyS, func() { s.saveActiveAs() })
+
 	// Escape closes the palette, else the search panel, else the go-to
 	// row, else disarms a pending annotation tool (and any of its
 	// in-flight gestures), else clears a text selection (one binding: a
