@@ -12,6 +12,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -89,6 +90,16 @@ type HistoryEntry struct {
 	OffsetY float64 // viewer scroll offset when the entry was recorded
 }
 
+// TabPermissions snapshots what the tab's document allows, taken once at
+// open from the pdf.Doc permission snapshot (pdf/password.go) so it
+// survives even after the doc closed. Issue 3 consumes Annotate: the
+// annotation tools stay hidden for documents that deny PermAnnotate.
+type TabPermissions struct {
+	Annotate bool
+	Print    bool
+	Copy     bool
+}
+
 // Tab is one open document in a tab (spec §6).
 type Tab struct {
 	ID       string
@@ -100,6 +111,10 @@ type Tab struct {
 	Zoom     float64 // last computed zoom factor; the source of truth for ZoomCustom
 	ZoomMode ZoomMode
 	Rotate   int // 0 | 90 | 180 | 270
+
+	// Permissions is the open-time snapshot of what the document allows
+	// (all true for unencrypted files).
+	Permissions TabPermissions
 
 	History []HistoryEntry // back stack (oldest first)
 	Future  []HistoryEntry // forward stack
@@ -154,6 +169,24 @@ type AppState struct {
 	ShowPrintError bool
 	PrintError     string
 
+	// Password prompt (password.go): the open that waits for one.
+	// ShowPasswordPrompt toggles the modal overlay, PendingPasswordPath
+	// is the absolute path it will open when unlocked, PasswordAttempts
+	// counts wrong entries (three close the prompt) and PasswordError
+	// is the inline error line under the field. PendingPasswordPath is
+	// the flag's shadow: any dismissal path that clears the flag leaves
+	// it set for one build, which the overlay's sweep converts into a
+	// dropped pending open.
+	ShowPasswordPrompt  bool
+	PendingPasswordPath string
+	PasswordAttempts    int
+	PasswordError       string
+
+	// StatusNotice is a transient message the status bar shows (the
+	// password flow's failure notice); cleared by the next successful
+	// open or a fresh prompt.
+	StatusNotice string
+
 	// ShowGoTo toggles the "Go to page" row under the toolbar (the
 	// toolbar's page indicator opens it); gotoRow builds it.
 	ShowGoTo bool
@@ -198,17 +231,46 @@ func (s *AppState) Active() *Tab {
 }
 
 // OpenTab opens path in a new tab and activates it. If the path is already
-// open its tab is activated and returned instead. The caller is responsible
-// for triggering the first page render and for UI invalidation.
+// open its tab is activated and returned instead. Password-protected files
+// arm the password prompt (password.go) instead of failing outright; the
+// returned error still wraps pdf.ErrNeedsPassword so callers can tell the
+// prompt case from a real failure. The caller is responsible for triggering
+// the first page render and for UI invalidation.
 func (s *AppState) OpenTab(path string) (*Tab, error) {
+	return s.openTab(path, "")
+}
+
+// OpenTabWithPassword opens path in a new tab, authenticating encrypted
+// documents with password (pdf.OpenWithPassword); the rest of the flow is
+// OpenTab's. The password prompt's Unlock action calls this.
+func (s *AppState) OpenTabWithPassword(path, password string) (*Tab, error) {
+	return s.openTab(path, password)
+}
+
+// openTab is the one open path both OpenTab and OpenTabWithPassword go
+// through: dedupe, open (with or without a password), launcher-tab
+// cleanup and the tab build, including the permissions snapshot issue
+// 3's tools will read.
+func (s *AppState) openTab(path, password string) (*Tab, error) {
 	for _, t := range s.Tabs {
 		if strings.EqualFold(t.Path, mustAbs(path)) {
 			s.SelectTabBy(t.ID)
 			return t, nil
 		}
 	}
-	doc, err := pdf.Open(path)
+	var (
+		doc *pdf.Doc
+		err error
+	)
+	if password == "" {
+		doc, err = pdf.Open(path)
+	} else {
+		doc, err = pdf.OpenWithPassword(path, password)
+	}
 	if err != nil {
+		if password == "" && errors.Is(err, pdf.ErrNeedsPassword) {
+			s.armPasswordPrompt(mustAbs(path)) // the prompt continues this open
+		}
 		return nil, err
 	}
 	// A real document replaces leftover launcher tabs ("+ then opened a
@@ -237,12 +299,21 @@ func (s *AppState) OpenTab(path string) (*Tab, error) {
 		Rotate:   0,
 		Outline:  doc.Outline(),
 		Cache:    pdf.NewPageCache(defaultCacheBytes),
+
+		// Snapshot what the document allows before anything can close
+		// it; all three are true for unencrypted files.
+		Permissions: TabPermissions{
+			Annotate: doc.CanAnnotate(),
+			Print:    doc.CanPrint(),
+			Copy:     doc.CanCopy(),
+		},
 	}
 	if s.Settings.DefaultZoomMode == ZoomCustom {
 		t.Zoom = clampZoom(s.Settings.DefaultZoom)
 	}
 	s.Tabs = append(s.Tabs, t)
 	s.ActiveTab = len(s.Tabs) - 1
+	s.StatusNotice = "" // a fresh open clears the last failure notice
 	s.addRecent(t.Path)
 	return t, nil
 }
@@ -281,6 +352,18 @@ func (s *AppState) NewEmptyTab() *Tab {
 
 // IsEmpty reports a launcher tab: no document behind it.
 func (t *Tab) IsEmpty() bool { return t != nil && t.Doc == nil }
+
+// CanAnnotate reports whether the tab's document permits annotations
+// (the open-time snapshot; false for launcher tabs). Issue 3's
+// annotation tools check this instead of pdf.Doc so a closed tab's
+// answer stays stable.
+func (t *Tab) CanAnnotate() bool { return t.Permissions.Annotate }
+
+// CanPrint reports whether the tab's document permits printing.
+func (t *Tab) CanPrint() bool { return t.Permissions.Print }
+
+// CanCopy reports whether the tab's document permits text extraction.
+func (t *Tab) CanCopy() bool { return t.Permissions.Copy }
 
 // CloseTab removes a tab by id, releases its document, and records its path
 // for reopen-closed-tab. Returns the tab that should be active afterwards.

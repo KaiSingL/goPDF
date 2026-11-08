@@ -14,6 +14,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
+	"gopdf/internal/pdf"
 	gopdfprint "gopdf/internal/print"
 )
 
@@ -179,25 +181,37 @@ func lastPage(s *AppState) func() {
 // Safe from any goroutine and from main-thread callbacks that arrive
 // before the window exists: the state change hops through Window.Update
 // once the window is set, and runs inline before that (main thread).
+// An encrypted document arms the password prompt instead of failing:
+// the error still comes back (it wraps pdf.ErrNeedsPassword), but it is
+// the prompt's to finish, not a log line.
 func OpenPath(path string) {
 	update(func() {
 		if current == nil {
 			return
 		}
 		if _, err := current.OpenTab(path); err != nil {
+			if errors.Is(err, pdf.ErrNeedsPassword) {
+				return // the password prompt is up (password.go)
+			}
 			log.Printf("gopdf: open %s: %v", path, err)
 			return
 		}
-		// OpenTab recorded the path in s.Recents; mirror it into the
-		// system's recent documents (jump list). AddRecentDocument panics
-		// on the main thread before App.Run, which the window != nil check
-		// rules out.
-		if window != nil {
-			if err := mygo.App.AddRecentDocument(path); err != nil {
-				log.Printf("gopdf: recent %s: %v", path, err)
-			}
-		}
+		addSystemRecent(path)
 	})
+}
+
+// addSystemRecent mirrors an opened path into the system's recent
+// documents (jump list). Every successful open route funnels here:
+// OpenPath and the password prompt's unlock. AddRecentDocument panics
+// on the main thread before App.Run, which the window != nil check
+// rules out.
+func addSystemRecent(path string) {
+	if window == nil {
+		return
+	}
+	if err := mygo.App.AddRecentDocument(path); err != nil {
+		log.Printf("gopdf: recent %s: %v", path, err)
+	}
 }
 
 // OpenFilePicker shows the system open dialog; exported for the File menu.

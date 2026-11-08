@@ -31,6 +31,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -362,11 +363,14 @@ func recentCard(c *ui.Context, th *ui.Theme, path string) {
 }
 
 // openDropped opens the first dropped PDF in a new tab. Launcher tabs are
-// closed by OpenTab itself, so a drop on a New Tab page replaces it.
+// closed by OpenTab itself, so a drop on a New Tab page replaces it. An
+// encrypted drop stops here too: OpenTab armed the password prompt and
+// the error only says so.
 func openDropped(s *AppState, paths []string) {
 	for _, p := range paths {
 		if strings.EqualFold(filepath.Ext(p), ".pdf") {
-			if _, err := s.OpenTab(p); err == nil {
+			_, err := s.OpenTab(p)
+			if err == nil || errors.Is(err, pdf.ErrNeedsPassword) {
 				return
 			}
 		}
