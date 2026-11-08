@@ -221,6 +221,15 @@ func newDoc(fit *fitz.Document, abs string) (*Doc, error) {
 	d.pages, d.sizes, d.origins, d.toc = pages, sizes, origins, toc
 	d.perms = snapshotPermissions(fit)
 
+	// CJK glyph fallback (issue 5): the bundled MuPDF ships without CJK
+	// fonts, so PDFs whose CJK fonts are not embedded render mojibake
+	// through MuPDF's hail-mary substitute font. Arm the context with an
+	// OS CJK font when one exists — PDFs only, best-effort: every failure
+	// path leaves rendering exactly as before, and the font loads lazily
+	// so documents that never ask for it pay nothing. Before the go
+	// statement: the install happens-before the worker's first use.
+	armCJKFallback(fit, d.meta["format"])
+
 	// Hand the fitz document to the worker by passing it as an argument: the
 	// `go` statement is the happens-before edge. (A handover task queued on
 	// the channel is NOT safe: Close sets closed before queueing the stop
@@ -250,6 +259,20 @@ func deriveGeometry(fit *fitz.Document) (pages int, sizes, origins [][2]float64,
 		origins[i] = [2]float64{float64(b.Min.X), float64(b.Min.Y)}
 	}
 	return pages, sizes, origins, outlineTree(fit), nil // empty outline is not an error (fitz quirk)
+}
+
+// armCJKFallback installs the OS CJK fallback font into a fresh document's
+// context: format must be a PDF (the bundled MuPDF's missing-CJK-font
+// failure mode is a PDF font-loading path), and an OS candidate must exist
+// (a plain file stat inside the fork). All failure is silent — without the
+// font, rendering is exactly what it has always been. (Issue 5.)
+func armCJKFallback(fit *fitz.Document, format string) {
+	if !strings.HasPrefix(format, "PDF") {
+		return
+	}
+	if path, ok := fitz.CJKFallbackFontPath(); ok {
+		fit.InstallCJKFallback(path)
+	}
 }
 
 // loop is the Doc's worker goroutine: the only goroutine that uses fit.
@@ -522,6 +545,11 @@ func RenderThumb(path string) (*image.RGBA, error) {
 		return nil, fmt.Errorf("pdf: open %s: %w", abs, err)
 	}
 	defer fit.Close()
+
+	// Same CJK fallback policy as Open: launcher thumbnails of CJK PDFs
+	// must not be the only place still painting mojibake.
+	armCJKFallback(fit, fit.Metadata()["format"])
+
 	img, err := fit.ImageDPI(0, ThumbDPI)
 	if err != nil {
 		return nil, fmt.Errorf("pdf: thumb %s: %w", abs, err)
