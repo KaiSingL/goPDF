@@ -158,10 +158,17 @@ void drop_string(fz_context *ctx, char *s) {
 // Document context owns its private font and no state is shared across
 // contexts (MuPDF requires one goroutine per context anyway).
 struct gopdf_cjk_rec {
+	int magic;     // GOPDF_CJK_MAGIC: the drop helper only frees OUR record
 	char *path;    // OS font file, fz_strdup'd
 	fz_font *font; // created on first request; this record holds one reference
 	int failed;    // load failed once: never retry, render as before
 };
+
+// The user slot is an embedder-owned parking spot (MuPDF touches it
+// never), but a FUTURE GoPDF patch might legitimately park something
+// else there. The drop helper refuses anything without the magic so a
+// foreign record would never be fz_free'd through our shape.
+#define GOPDF_CJK_MAGIC 0x5c4a4601
 
 // UCDN script numbers, from the ucdn.h MuPDF 1.28 bundles (not shipped in
 // the fork's headers, so pinned here with its upstream path).
@@ -258,6 +265,7 @@ int gopdf_install_cjk_fallback(fz_context *ctx, const char *path) {
 
 	fz_try(ctx) {
 		rec = fz_malloc_struct(ctx, struct gopdf_cjk_rec);
+		rec->magic = GOPDF_CJK_MAGIC;
 		rec->path = dup;
 	}
 	fz_catch(ctx) {
@@ -275,8 +283,8 @@ int gopdf_install_cjk_fallback(fz_context *ctx, const char *path) {
 // kept references drop them as the context's store is emptied.
 void gopdf_drop_cjk_fallback(fz_context *ctx) {
 	struct gopdf_cjk_rec *rec = gopdf_cjk_rec_of(ctx);
-	if (rec == NULL)
-		return;
+	if (rec == NULL || rec->magic != GOPDF_CJK_MAGIC)
+		return; // ours only: a foreign record in the slot is not touched
 	fz_drop_font(ctx, rec->font);
 	fz_free(ctx, rec->path);
 	fz_free(ctx, rec);
@@ -724,6 +732,11 @@ func cjkFallbackCandidates() []string {
 			`C:\Windows\Fonts\msyh.ttc`,   // Microsoft YaHei
 			`C:\Windows\Fonts\simhei.ttf`, // SimHei
 			`C:\Windows\Fonts\simsun.ttc`, // SimSun
+			// Hangul syllables: the Simplified-Chinese faces above carry
+			// none, so Adobe-Korea1 PDFs need a Korean-capable candidate
+			// in the list or they paint notdef boxes even armed.
+			`C:\Windows\Fonts\malgun.ttf`, // Malgun Gothic (Win8+)
+			`C:\Windows\Fonts\gulim.ttc`,  // Gulim (older Windows)
 		}
 	case "darwin":
 		return []string{
@@ -732,6 +745,9 @@ func cjkFallbackCandidates() []string {
 			"/System/Library/Fonts/STHeiti Light.ttc",
 			"/System/Library/Fonts/STHeiti Medium.ttc",
 			"/System/Library/Fonts/Supplemental/Songti.ttc",
+			// Hangul: the simplified-Chinese faces above carry none.
+			"/System/Library/Fonts/Apple SD Gothic Neo.ttc",
+			"/System/Library/Fonts/AppleSDGothicNeo.ttc",
 		}
 	default: // linux and the BSDs: the usual CJK font packages
 		return []string{

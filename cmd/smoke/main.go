@@ -73,6 +73,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("open: %v", err)
 	}
+	// Arm the OS CJK fallback exactly like pdf.Open does, so a smoke run
+	// reads the rendering path the product shows (its argument can be a
+	// CJK document whose non-embedded fonts need the hook).
+	if cjk, ok := fitz.CJKFallbackFontPath(); ok {
+		doc.InstallCJKFallback(cjk)
+	}
 	fmt.Printf("open:    %v (%d pages)\n", time.Since(t0), doc.NumPage())
 
 	t1 := time.Now()

@@ -67,6 +67,9 @@ func renderFixturePDF(t *testing.T, b []byte, arm bool) *image.RGBA {
 	defer doc.Close()
 	if arm {
 		path, ok := fitz.CJKFallbackFontPath()
+		if env := os.Getenv("GOPDF_TEST_CJK_FONT"); env != "" {
+			path, ok = env, true
+		}
 		if !ok {
 			t.Fatalf("arm requested but no OS CJK font candidate exists")
 		}
@@ -107,9 +110,20 @@ func countDiffPixels(a, b *image.RGBA) int {
 
 // cjkFontOrSkip returns the OS CJK fallback candidate or skips the test:
 // without one the feature is intentionally inert and every assertion below
-// is vacuous.
+// is vacuous. GOPDF_TEST_CJK_FONT overrides the candidate list (a CI box
+// with an unusual font location); GOPDF_TEST_NO_CJK=1 forces the skip so
+// fontless CI boxes still exercise every other test.
 func cjkFontOrSkip(t *testing.T) string {
 	t.Helper()
+	if os.Getenv("GOPDF_TEST_NO_CJK") == "1" {
+		t.Skip("GOPDF_TEST_NO_CJK=1: CJK fallback tests forced off")
+	}
+	if forced := os.Getenv("GOPDF_TEST_CJK_FONT"); forced != "" {
+		if _, err := os.Stat(forced); err == nil {
+			return forced
+		}
+		t.Fatalf("GOPDF_TEST_CJK_FONT=%s does not exist", forced)
+	}
 	path, ok := fitz.CJKFallbackFontPath()
 	if !ok {
 		t.Skip("no OS CJK font candidate found; fallback is inert")
