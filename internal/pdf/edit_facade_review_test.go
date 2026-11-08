@@ -316,8 +316,10 @@ func TestFacadeSaveInlineFromCallback(t *testing.T) {
 	d := openTestDoc(t, path)
 
 	// From the test goroutine: not the worker. The store happens as the
-	// loop's first statement, a beat after Open returns, so poll briefly.
-	deadline := time.Now().Add(time.Second)
+	// loop's first statement, a beat after Open returns, so poll briefly
+	// (30s, matching the suite's other waits, so a loaded CI box cannot
+	// starve the fresh worker goroutine into a flake).
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if g := d.loopGid.Load(); g != 0 {
 			break

@@ -451,10 +451,20 @@ func (d *Doc) savePath(f *fitz.Document, path string, opts fitz.SaveOptions) err
 		// on Windows: the primary save flow would always fail. Demote to
 		// an incremental save instead: it appends reconciled updates and
 		// is the same platform the fork's own incremental path serves.
-		// Compaction is dropped on this branch; a real full save on
-		// Windows means Save-As (then reopening on app restart).
+		// Two exception shapes on this branch (both loud, not silent):
+		// compaction requests are stripped (MuPDF refuses incremental
+		// writes with garbage collection), and a same-path save that wants
+		// to CHANGE encryption has no incremental analogue — Save-As is
+		// the supported route for that on Windows.
 		fullOpts := opts
 		fullOpts.Incremental = true
+		fullOpts.Garbage = 0
+		if fullOpts.Encryption != fitz.EncryptKeep {
+			// EncryptKeep is "keep the doc's existing encryption", every
+			// other value wants to set NEW encryption: incremental saves
+			// reject that, so the honest answer is an explicit error.
+			return fmt.Errorf("pdf: encryption-change same-path saves need Save-As on Windows")
+		}
 		return f.Save(path, fullOpts)
 	}
 	// POSIX same-path full save: sibling temp + rename. Strictly more
