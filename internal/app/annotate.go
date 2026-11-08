@@ -124,6 +124,21 @@ type AnnotState struct {
 	SquarePage   int
 	SquareAnchor [2]float64
 	SquareCur    [2]float64
+
+	// Existing-annot overlay (the interactive layer over the rendered
+	// appearances): one listing per page, requested lazily when a page
+	// is built and refreshed by requestAnnots after every mutation and
+	// reload. Page-space data re-maps on every build, so zoom, scroll
+	// and rotation are inherently fresh.
+	Listed      map[int][]pdf.PageAnnot
+	listPending map[int]bool // an AnnotsAsync is in flight
+
+	// The context panel (click an existing annot): SelOpen drives the
+	// modal, the other fields identify the annot.
+	SelOpen bool
+	SelID   int
+	SelPage int
+	SelType string
 }
 
 // ToggleAnnotTool arms k as the tab's pending tool, or disarms it when k
@@ -364,6 +379,226 @@ func (s *AppState) CommitSquareDrag(t *Tab) {
 	done := func(id int, err error) { s.annotDone(t, annotToolLabel(AnnotToolSquare))(err) }
 	t.Doc.AddSquareAsync(page, rect, squareColor, 1, done)
 }
+
+// ---- existing-annot overlay --------------------------------------------
+
+// markupKind reports whether an annot type draws through quad points
+// (the paint pass renders those as translucent fills or lines).
+func markupKind(t fitz.AnnotType) bool {
+	switch t {
+	case fitz.AnnotHighlight, fitz.AnnotUnderline, fitz.AnnotSquiggly, fitz.AnnotStrikeOut:
+		return true
+	}
+	return false
+}
+
+// overlayKind filters what the overlay paints: the fork lists every
+// annot of the page, and links/popups/widgets are not this tooling's to
+// decorate or delete through the annotation context.
+func overlayKind(a pdf.PageAnnot) bool {
+	switch a.Type {
+	case fitz.AnnotLink, fitz.AnnotPopup, fitz.AnnotWidget, fitz.AnnotUnknown:
+		return false
+	}
+	return true
+}
+
+// requestAnnots fetches page's annots once (the build calls it for every
+// visible page): the listing lands on the UI thread through the worker
+// hop, tagged with the ReloadGen it was issued under so a reply that
+// raced a mutation is discarded instead of clobbering the refreshed
+// state. Tab.Reload clears Listed, which is what makes every reload path
+// (menu, a finished mutation) re-request.
+func (s *AppState) requestAnnots(t *Tab, page int) {
+	if t == nil || t.Doc == nil || !t.CanAnnotate() {
+		return
+	}
+	if t.Annot.Listed == nil {
+		t.Annot.Listed = map[int][]pdf.PageAnnot{}
+	}
+	if t.Annot.listPending == nil {
+		t.Annot.listPending = map[int]bool{}
+	}
+	if _, ok := t.Annot.Listed[page]; ok {
+		return // have it
+	}
+	if t.Annot.listPending[page] {
+		return // on its way
+	}
+	t.Annot.listPending[page] = true
+	tabID, gen := t.ID, t.ReloadGen
+	t.Doc.AnnotsAsync(page, func(as []pdf.PageAnnot, err error) {
+		updateFromWorker(func() { // hop, never inline
+			cur := s.tabByID(tabID)
+			if cur == nil || cur.Doc == nil {
+				return
+			}
+			if t := &cur.Annot; t.listPending != nil {
+				delete(t.listPending, page)
+			}
+			if cur.ReloadGen != gen {
+				return // a mutation superseded this listing; the next build re-requests
+			}
+			if err != nil {
+				return // transient (page raced a structure edit): retry on the next build
+			}
+			cur.Annot.Listed[page] = as
+			if window != nil {
+				window.Invalidate() // paint the overlay now that data arrived
+			}
+		})
+	})
+}
+
+// annotPaint is one overlay shape of an existing annot, computed at
+// build time (plain data) and painted in the page's DrawOver pass.
+type annotPaint struct {
+	rect     [4]float32 // DIPs on the rotated, drawn page
+	fill     bool       // highlight: translucent fill over the quads
+	line     int        // 1 bottom edge (underline), 2 middle (strikeout/squiggly)
+	marker   bool       // non-markup: a small corner badge
+	selected bool
+}
+
+// annotPaintList maps page's listed annots into DIP-space shapes at the
+// drawn scale k. The rendered bitmap already carries each annot's
+// appearance; these shapes are the interactive affordance (hit feedback
+// and selection), so the alphas stay subtle by design.
+func annotPaintList(t *Tab, page int, k float64) []annotPaint {
+	if !t.CanAnnotate() || t.Annot.Listed == nil {
+		return nil
+	}
+	list := t.Annot.Listed[page]
+	if len(list) == 0 {
+		return nil
+	}
+	var out []annotPaint
+	for i := range list {
+		a := &list[i]
+		if !overlayKind(*a) {
+			continue
+		}
+		sel := t.Annot.SelOpen && t.Annot.SelID == a.ID && t.Annot.SelPage == page
+		if markupKind(a.Type) {
+			for _, q := range a.Quads {
+				out = append(out, annotPaint{
+					rect: quadDipRect(t, page, quadHitRect(q), k),
+					fill: a.Type == fitz.AnnotHighlight,
+					line: map[fitz.AnnotType]int{
+						fitz.AnnotUnderline: 1,
+						fitz.AnnotStrikeOut: 2, fitz.AnnotSquiggly: 2,
+					}[a.Type],
+					selected: sel,
+				})
+			}
+			continue
+		}
+		// Non-markup: a small badge at the rect's top-left corner, the
+		// annot's visible anchor on the rotated view.
+		pt := spanDipRect(t, page, pdf.TextSpan{X: a.Rect.X0, Y: a.Rect.Y0}, k)
+		out = append(out, annotPaint{rect: pt, marker: true, selected: sel})
+	}
+	return out
+}
+
+// quadHitRect reduces one quad to its bounding HitRect (min/max of the
+// corners, robust against skewed quads).
+func quadHitRect(q fitz.Quad) pdf.HitRect {
+	return pdf.HitRect{
+		X0: min(min(q.UL.X, q.UR.X), min(q.LL.X, q.LR.X)),
+		Y0: min(min(q.UL.Y, q.UR.Y), min(q.LL.Y, q.LR.Y)),
+		X1: max(max(q.UL.X, q.UR.X), max(q.LL.X, q.LR.X)),
+		Y1: max(max(q.UL.Y, q.UR.Y), max(q.LL.Y, q.LR.Y)),
+	}
+}
+
+// annotAt returns the topmost listed annot of page whose geometry
+// contains the page-space point px,py (a few points of slop so thin
+// underlines and small markers are clickable), or nil. Topmost is the
+// LAST listing entry: the fork walks the page's /Annots in draw order.
+func annotAt(t *Tab, page int, px, py float64) *pdf.PageAnnot {
+	if !t.CanAnnotate() || t.Annot.Listed == nil {
+		return nil
+	}
+	list := t.Annot.Listed[page]
+	for i := len(list) - 1; i >= 0; i-- {
+		a := &list[i]
+		if !overlayKind(*a) {
+			continue
+		}
+		if markupKind(a.Type) {
+			for _, q := range a.Quads {
+				r := quadHitRect(q)
+				if px >= r.X0-2 && px <= r.X1+2 && py >= r.Y0-2 && py <= r.Y1+2 {
+					return a
+				}
+			}
+			continue
+		}
+		r := a.Rect
+		if px >= r.X0-4 && px <= r.X1+4 && py >= r.Y0-4 && py <= r.Y1+4 {
+			return a
+		}
+	}
+	return nil
+}
+
+// selectAnnot opens the context panel for a hit-tested annot.
+func (s *AppState) selectAnnot(t *Tab, page int, a *pdf.PageAnnot) {
+	t.Annot.SelOpen = true
+	t.Annot.SelID = a.ID
+	t.Annot.SelPage = page
+	t.Annot.SelType = a.Type.String()
+}
+
+// deleteSelectedAnnot removes the context panel's annot through the
+// facade and closes the panel; the shared annotDone hop refreshes the
+// overlay (Reload clears the listing; the next build re-requests it).
+func (s *AppState) deleteSelectedAnnot(t *Tab) {
+	if t == nil || t.Doc == nil || !t.Annot.SelOpen || t.Annot.SelID == 0 {
+		return
+	}
+	t.Annot.SelOpen = false
+	page, id := t.Annot.SelPage, t.Annot.SelID
+	t.Doc.DeleteAnnotAsync(page, id, s.annotDone(t, "delete annotation"))
+}
+
+// annotContextOverlay renders the click-on-annot context panel: the type
+// name, Delete and Close, with the Delete key bound while open. ui.Modal
+// dismisses (Escape, backdrop) through its own flag-clearing; the sweep
+// below drops the selection data with it.
+func annotContextOverlay(c *ui.Context, s *AppState) {
+	t := s.Active()
+	if t == nil || !t.Annot.SelOpen || t.Annot.SelID == 0 {
+		if t != nil {
+			t.Annot.SelOpen = false // sweep: dismissed, selection dropped
+		}
+		return
+	}
+	ui.Modal(c, &t.Annot.SelOpen, func() { annotContextPanel(c, s, t) })
+}
+
+// annotContextPanel is the panel itself. The Delete key binds in the
+// modal's own scope (window shortcuts wait behind a modal; the palette
+// binds its keys the same way).
+func annotContextPanel(c *ui.Context, s *AppState, t *Tab) {
+	th := c.Theme()
+	c.OnShortcut(0, ui.KeyDelete, func() { s.deleteSelectedAnnot(t) })
+	ui.Column(c).Width(360).Gap(th.Space(2)).Children(func() {
+		ui.Text(c, t.Annot.SelType).Bold().FontSize(th.FontSize * 1.15)
+		ui.Text(c, fmt.Sprintf("Page %d", t.Annot.SelPage+1)).
+			TextColor(th.TextMuted).FontSize(th.FontSize * 0.9).SingleLine()
+		ui.Row(c).FillWidth().Justify(ui.End).Gap(th.Space(1)).Children(func() {
+			if ui.Button(c, "Delete").Clicked() {
+				s.deleteSelectedAnnot(t)
+			}
+			if ui.PrimaryButton(c, "Close").Clicked() {
+				t.Annot.SelOpen = false
+			}
+		})
+	})
+}
+
 // annotToolButton is one toolbar button of the annotation group. The
 // armed tool reads as the active tab does: an accent-tinted surface.
 func annotToolButton(c *ui.Context, s *AppState, t *Tab, k AnnotToolKind, tip string, icon *ui.SVG) {

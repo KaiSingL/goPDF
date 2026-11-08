@@ -409,6 +409,12 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 	// the draw callback, which may run repeatedly.
 	hits := hitRects(t, i, z)
 	selRects := selPaintRects(t, i, pageDipScale(t, i, z))
+	// The existing-annot overlay (annotate.go): request the page's
+	// listing (once per reload generation), then paint it under the
+	// hits. Entirely off for tabs that cannot annotate: their annots
+	// show through the RENDERED appearance only, never double-painted.
+	s.requestAnnots(t, i)
+	annots := annotPaintList(t, i, pageDipScale(t, i, z))
 	// The square drag's live preview (annotate.go): a thin outline in
 	// the same overlay pass, the selection/hit painting style.
 	var squareRect [4]float32
@@ -418,14 +424,19 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 			X: x0, Y: y0, W: x1 - x0, H: y1 - y0,
 		}, pageDipScale(t, i, z))
 	}
-	var curCol, otherCol, selCol ui.Color
+	var curCol, otherCol, selCol, annotFill, annotLine ui.Color
 	hasSquare := t.Annot.SquareDrag && t.Annot.SquarePage == i
-	if len(hits) > 0 || len(selRects) > 0 || hasSquare {
+	if len(hits) > 0 || len(selRects) > 0 || hasSquare || len(annots) > 0 {
 		curCol, otherCol = hitCurLight, hitOtherLight
 		if c.Theme().Dark {
 			curCol, otherCol = hitCurDark, hitOtherDark
 		}
 		selCol = c.Theme().Accent.Alpha(0.30)
+		// The rendered bitmap already draws each annot's appearance;
+		// the overlay's translucent shapes are the hit affordance and
+		// stay subtle so nothing reads as double-painted.
+		annotFill = ui.RGBA(0xFF, 0xE1, 0x4D, 0.20)
+		annotLine = ui.RGBA(0, 0, 0, 0.35)
 	}
 
 	bm := pageBitmap(t, i, renderZ, z)
@@ -446,10 +457,39 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 			ui.Textf(c, "Page %d", i+1).TextColor(c.Theme().TextMuted)
 		})
 	})
-	if len(hits) > 0 || len(selRects) > 0 || label != "" || hasSquare {
+	if len(hits) > 0 || len(selRects) > 0 || label != "" || hasSquare || len(annots) > 0 {
+		markerCol := c.Theme().Accent.Alpha(0.85)
+		selStroke := c.Theme().Accent
 		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
 			if debugOn {
 				debugSetRect(i, r) // scrolltest crops captures to this
+			}
+			// Existing annots (annotate.go) paint FIRST, under the live
+			// marks: hits, the square preview and the selection are the
+			// user's own current actions and read on top.
+			for _, a := range annots {
+				ar := ui.Rect{
+					X: r.X + a.rect[0], Y: r.Y + a.rect[1],
+					W: a.rect[2], H: a.rect[3],
+				}
+				switch {
+				case a.marker:
+					b := ui.Rect{X: ar.X - 4, Y: ar.Y - 4, W: 9, H: 9}
+					p.Fill(b, markerCol, 2)
+					if a.selected { // ring the badge, not the 0-size point
+						p.Stroke(ui.Rect{X: b.X - 2, Y: b.Y - 2, W: b.W + 4, H: b.H + 4}, selStroke, 3, 1.5)
+					}
+					continue
+				case a.fill:
+					p.Fill(ar, annotFill, 2)
+				case a.line == 1: // underline: the quad's bottom edge
+					p.Line(ar.X+1, ar.Y+ar.H-0.5, ar.X+ar.W-1, ar.Y+ar.H-0.5, 1, annotLine)
+				case a.line == 2: // strikeout: the quad's middle
+					p.Line(ar.X+1, ar.Y+ar.H/2, ar.X+ar.W-1, ar.Y+ar.H/2, 1, annotLine)
+				}
+				if a.selected {
+					p.Stroke(ar, selStroke, 2, 1.5)
+				}
 			}
 			for _, h := range hits {
 				col := otherCol
@@ -547,6 +587,17 @@ func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
 	}
 	switch {
 	case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
+		// An existing annot under the pointer opens its context panel
+		// instead of starting a selection (annotate.go). No tool may be
+		// armed — an armed tool's gesture comes first above.
+		if t.CanAnnotate() && t.Annot.Tool == AnnotToolNone {
+			k := pageDipScale(t, i, t.Zoom)
+			px, py := dipToPagePt(t, i, k, ev.X, ev.Y)
+			if a := annotAt(t, i, px, py); a != nil {
+				s.selectAnnot(t, i, a)
+				return true
+			}
+		}
 		s.StartSelection(t, i, ev.X, ev.Y)
 		return true
 	case ev.Kind == ui.InputPointerMove && t.Sel.Dragging && t.Sel.Page == i:

@@ -123,13 +123,14 @@ func (s *AppState) View(c *ui.Context) {
 			})
 		})
 
-		ui.Divider(c)           // ─ over the status bar
-		statusBar(c, s)         // C: fit mode, zoom, theme switch
-		paletteOverlay(c, s)    // D: Ctrl+K palette, drawn above everything
-		propertiesOverlay(c, s) // D: Document Properties dialog (File menu)
-		printAlert(c, s)        // D: a failed print names its cause
-		noteEditorOverlay(c, s) // D: sticky-note inline editor (annotate.go)
-		passwordOverlay(c, s)   // D: encrypted-document password prompt, topmost
+		ui.Divider(c)             // ─ over the status bar
+		statusBar(c, s)           // C: fit mode, zoom, theme switch
+		paletteOverlay(c, s)      // D: Ctrl+K palette, drawn above everything
+		propertiesOverlay(c, s)   // D: Document Properties dialog (File menu)
+		printAlert(c, s)          // D: a failed print names its cause
+		annotContextOverlay(c, s) // D: annotation context panel (annotate.go)
+		noteEditorOverlay(c, s)   // D: sticky-note inline editor (annotate.go)
+		passwordOverlay(c, s)     // D: encrypted-document password prompt, topmost
 	})
 }
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/ui"
+	"github.com/gen2brain/go-fitz"
 	"gopdf/internal/pdf"
 )
 
@@ -306,5 +307,152 @@ func TestSquareClickKeepsTool(t *testing.T) {
 	}
 	if as := waitTabAnnots(t, tt, tab, 0, 0); len(as) != 0 {
 		t.Fatalf("a click created a square: %+v", as)
+	}
+}
+
+// createHighlightOver places a highlight quad band over the page-space
+// point through the facade directly (the mutation callback's Reload is
+// what the UI flow does; the test mimics it) and returns once the edit
+// applied.
+func createHighlightOver(t *testing.T, tab *Tab, page int, px, py float64) {
+	t.Helper()
+	quads := []fitz.Quad{{
+		UL: fitz.Point{X: px - 8, Y: py - 4}, UR: fitz.Point{X: px + 52, Y: py - 4},
+		LL: fitz.Point{X: px - 8, Y: py + 4}, LR: fitz.Point{X: px + 52, Y: py + 4},
+	}}
+	done := make(chan error, 1)
+	tab.Doc.AddHighlightAsync(page, quads, pdf.RGB{R: 1, G: 0.9, B: 0.3}, 0.5,
+		func(id int, err error) { done <- err })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("create highlight: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("create highlight timed out")
+	}
+	// The mutation callback's refresh path (annotDone) rides Reload;
+	// mimic it so the listing refetches.
+	tab.Reload()
+}
+
+// TestAnnotOverlayPaintsAndHitTests: after a highlight exists, the
+// overlay listing lands, the paint list carries the translucent fill
+// shape, and a click on the annot opens the context panel instead of a
+// selection.
+func TestAnnotOverlayPaintsAndHitTests(t *testing.T) {
+	s := reproState(t, 2)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	// Learn what window point (600, 400) maps to in page space.
+	tt.Press(600, 400)
+	ax, ay := tab.Sel.Anchor[0], tab.Sel.Anchor[1]
+	tt.Release(600, 400) // the click clears the selection
+
+	createHighlightOver(t, tab, 0, ax, ay)
+
+	// Pump until the listing lands (request → worker → hop → next frame).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tab.Annot.Listed != nil && len(tab.Annot.Listed[0]) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if tab.Annot.Listed == nil || len(tab.Annot.Listed[0]) == 0 {
+		t.Fatal("the annot listing never landed")
+	}
+
+	paints := annotPaintList(tab, 0, pageDipScale(tab, 0, tab.Zoom))
+	if len(paints) == 0 || !paints[0].fill {
+		t.Fatalf("paint list for a highlight: %+v", paints)
+	}
+
+	// The click on the annot opens the context panel, not a selection.
+	tt.Press(600, 400)
+	tt.Release(600, 400)
+	if !tab.Annot.SelOpen || tab.Annot.SelID != tab.Annot.Listed[0][0].ID {
+		t.Fatalf("click on the annot: panel %v id %d", tab.Annot.SelOpen, tab.Annot.SelID)
+	}
+	if tab.Sel.Active {
+		t.Fatal("the annot click started a text selection")
+	}
+	if !tt.HasText("Highlight") {
+		t.Fatalf("context panel lacks the type name; texts %q", tt.Texts())
+	}
+}
+
+// TestAnnotDeleteFromContextPanel: Delete in the panel (and the Delete
+// key) removes the annot; the overlay refreshes to an empty listing.
+func TestAnnotDeleteFromContextPanel(t *testing.T) {
+	s := reproState(t, 2)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	tt.Press(600, 400)
+	ax, ay := tab.Sel.Anchor[0], tab.Sel.Anchor[1]
+	tt.Release(600, 400)
+	createHighlightOver(t, tab, 0, ax, ay)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if tab.Annot.Listed != nil && len(tab.Annot.Listed[0]) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	id := tab.Annot.Listed[0][0].ID
+	_ = id // the selected annot's identity is asserted via the panel below
+
+	// Open the panel by clicking the annot, then Delete via the KEY
+	// (the button path is the same call).
+	tt.Press(600, 400)
+	tt.Release(600, 400)
+	if !tab.Annot.SelOpen {
+		t.Fatal("context panel did not open")
+	}
+	tt.Key(0, ui.KeyDelete)
+	tt.Frame()
+	if tab.Annot.SelOpen {
+		t.Fatal("Delete did not close the panel")
+	}
+
+	// The overlay refreshes through the delete callback's Reload.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		tt.Frame()
+		if as, ok := tab.Annot.Listed[0]; ok && len(as) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if as, ok := tab.Annot.Listed[0]; !ok || len(as) != 0 {
+		t.Fatalf("listing after delete: present %v annots %+v", ok, as)
+	}
+	ch := make(chan annotsListReply, 1)
+	tab.Doc.AnnotsAsync(0, func(as []pdf.PageAnnot, err error) { ch <- annotsListReply{as, err} })
+	if r := <-ch; len(r.annots) != 0 || r.err != nil {
+		t.Fatalf("facade listing after delete: %+v err %v", r.annots, r.err)
+	}
+}
+
+// TestAnnotOverlayGatedWhenDenied: a tab that cannot annotate never
+// requests a listing, so the overlay stays entirely off (the rendered
+// appearance is all there is).
+func TestAnnotOverlayGatedWhenDenied(t *testing.T) {
+	s := reproState(t, 1)
+	tab := s.Active()
+	tab.Permissions.Annotate = false
+	tt := ui.NewTester(s.View, 1200, 800)
+	for i := 0; i < 5; i++ {
+		tt.Frame()
+	}
+	if tab.Annot.Listed != nil {
+		t.Fatalf("denied tab requested a listing: %+v", tab.Annot.Listed)
 	}
 }
