@@ -128,6 +128,7 @@ func (s *AppState) View(c *ui.Context) {
 		paletteOverlay(c, s)    // D: Ctrl+K palette, drawn above everything
 		propertiesOverlay(c, s) // D: Document Properties dialog (File menu)
 		printAlert(c, s)        // D: a failed print names its cause
+		noteEditorOverlay(c, s) // D: sticky-note inline editor (annotate.go)
 		passwordOverlay(c, s)   // D: encrypted-document password prompt, topmost
 	})
 }

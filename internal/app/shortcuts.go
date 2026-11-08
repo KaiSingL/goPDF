@@ -128,6 +128,7 @@ func shortcuts(c *ui.Context, s *AppState) {
 			switch {
 			case t != nil && t.Annot.Tool != AnnotToolNone:
 				t.Annot.Tool = AnnotToolNone
+				t.Annot.SquareDrag = false // cancels a drag mid-gesture too
 			case t != nil && t.Sel.Active:
 				t.ClearSelection()
 			}

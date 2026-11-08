@@ -184,3 +184,127 @@ func TestEscapeDisarmsAnnotTool(t *testing.T) {
 		t.Fatal("Escape did not disarm the pending tool")
 	}
 }
+
+// TestNotePlacementFlow: the armed note tool consumes the next page
+// click, the editor opens, typed text commits into a sticky-note annot
+// anchored near the click, and the mode is gone.
+func TestNotePlacementFlow(t *testing.T) {
+	s := reproState(t, 3)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	if err := tt.Click("Sticky Note"); err != nil {
+		t.Fatalf("note button: %v", err)
+	}
+	if tab.Annot.Tool != AnnotToolNote {
+		t.Fatalf("note tool not armed: %d", tab.Annot.Tool)
+	}
+
+	tt.Press(600, 400) // over page 0's middle
+	tt.Release(600, 400)
+	if !tab.Annot.NoteOpen {
+		t.Fatal("the click did not open the note editor")
+	}
+	if tab.Annot.Tool != AnnotToolNone {
+		t.Fatal("the note tool did not exit on placement")
+	}
+
+	tt.Type("a note from the test")
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	if tab.Annot.NoteOpen {
+		t.Fatal("Enter did not close the editor")
+	}
+
+	annots := waitTabAnnots(t, tt, tab, 0, 1)
+	if len(annots) != 1 || annots[0].Type.String() != "Text" {
+		t.Fatalf("created annot not a sticky note: %+v", annots)
+	}
+	if annots[0].Text != "a note from the test" {
+		t.Fatalf("note body: %q", annots[0].Text)
+	}
+	// The anchor sits at the click point: within the 40x36 rect's reach.
+	r := annots[0].Rect
+	if r.X1-r.X0 > 45 || r.Y1-r.Y0 > 41 {
+		t.Fatalf("anchor rect %v, want ~40x36pt", r)
+	}
+	if s.StatusNotice != "" {
+		t.Fatalf("creation surfaced an error: %q", s.StatusNotice)
+	}
+}
+
+// TestNoteEmptyEnterCancels: an empty commit drops the placement with
+// nothing created.
+func TestNoteEmptyEnterCancels(t *testing.T) {
+	s := reproState(t, 1)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	s.ToggleAnnotTool(tab, AnnotToolNote)
+	tt.Press(600, 400)
+	tt.Release(600, 400)
+	if !tab.Annot.NoteOpen {
+		t.Fatal("the click did not open the note editor")
+	}
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	if tab.Annot.NoteOpen {
+		t.Fatal("empty Enter did not cancel")
+	}
+	if as := waitTabAnnots(t, tt, tab, 0, 0); len(as) != 0 {
+		t.Fatalf("empty Enter created an annot: %+v", as)
+	}
+}
+
+// TestSquareDragFlow: the armed square tool turns a page drag into a
+// square annot over the dragged rect; the mode exits on commit.
+func TestSquareDragFlow(t *testing.T) {
+	s := reproState(t, 3)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	if err := tt.Click("Square"); err != nil {
+		t.Fatalf("square button: %v", err)
+	}
+	tt.Press(600, 400)
+	tt.Move(700, 500)
+	if !tab.Annot.SquareDrag {
+		t.Fatal("press did not start the square drag")
+	}
+	tt.Release(700, 500)
+	if tab.Annot.SquareDrag || tab.Annot.Tool != AnnotToolNone {
+		t.Fatalf("release: drag %v tool %d, want committed and disarmed",
+			tab.Annot.SquareDrag, tab.Annot.Tool)
+	}
+
+	annots := waitTabAnnots(t, tt, tab, 0, 1)
+	if len(annots) != 1 || annots[0].Type.String() != "Square" {
+		t.Fatalf("created annot not a square: %+v", annots)
+	}
+	r := annots[0].Rect
+	if r.X1-r.X0 < 10 || r.Y1-r.Y0 < 10 {
+		t.Fatalf("square rect %v, want a real drag-sized rect", r)
+	}
+}
+
+// TestSquareClickKeepsTool: a click-sized drag creates nothing and keeps
+// the tool armed for a retry.
+func TestSquareClickKeepsTool(t *testing.T) {
+	s := reproState(t, 1)
+	tt := ui.NewTester(s.View, 1200, 800)
+	tab := s.Active()
+	pumpToPage0(t, tt)
+
+	s.ToggleAnnotTool(tab, AnnotToolSquare)
+	tt.Press(600, 400)
+	tt.Release(600, 400)
+	if tab.Annot.Tool != AnnotToolSquare {
+		t.Fatal("a click-sized drag disarmed the square tool")
+	}
+	if as := waitTabAnnots(t, tt, tab, 0, 0); len(as) != 0 {
+		t.Fatalf("a click created a square: %+v", as)
+	}
+}

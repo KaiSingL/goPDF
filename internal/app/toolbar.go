@@ -94,7 +94,7 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 		// document permits them (Tab.CanAnnotate, the open-time
 		// permission snapshot from issue 2). The markup buttons arm a
 		// pending mode the next text selection consumes (annotate.go);
-		// note and square arrive with commit 2.
+		// the note takes the next click, the square the next drag.
 		if t.CanAnnotate() {
 			ui.Divider(c)
 			annotToolButton(c, s, t, AnnotToolHighlight,
@@ -103,6 +103,11 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 				"Underline (Ctrl+Shift+U), then select text", chromeIcons.underline)
 			annotToolButton(c, s, t, AnnotToolStrikeout,
 				"Strikeout (Ctrl+Shift+K), then select text", chromeIcons.strikeout)
+			ui.Divider(c)
+			annotToolButton(c, s, t, AnnotToolNote,
+				"Sticky note: click a page to place it", chromeIcons.note)
+			annotToolButton(c, s, t, AnnotToolSquare,
+				"Square: drag inside a page", chromeIcons.square)
 		}
 
 		// The spacer absorbs the leftover width, keeping the right section

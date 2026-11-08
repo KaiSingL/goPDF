@@ -409,8 +409,18 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 	// the draw callback, which may run repeatedly.
 	hits := hitRects(t, i, z)
 	selRects := selPaintRects(t, i, pageDipScale(t, i, z))
+	// The square drag's live preview (annotate.go): a thin outline in
+	// the same overlay pass, the selection/hit painting style.
+	var squareRect [4]float32
+	if t.Annot.SquareDrag && t.Annot.SquarePage == i {
+		x0, y0, x1, y1 := t.squareRectPts()
+		squareRect = spanDipRect(t, i, pdf.TextSpan{
+			X: x0, Y: y0, W: x1 - x0, H: y1 - y0,
+		}, pageDipScale(t, i, z))
+	}
 	var curCol, otherCol, selCol ui.Color
-	if len(hits) > 0 || len(selRects) > 0 {
+	hasSquare := t.Annot.SquareDrag && t.Annot.SquarePage == i
+	if len(hits) > 0 || len(selRects) > 0 || hasSquare {
 		curCol, otherCol = hitCurLight, hitOtherLight
 		if c.Theme().Dark {
 			curCol, otherCol = hitCurDark, hitOtherDark
@@ -436,7 +446,7 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 			ui.Textf(c, "Page %d", i+1).TextColor(c.Theme().TextMuted)
 		})
 	})
-	if len(hits) > 0 || len(selRects) > 0 || label != "" {
+	if len(hits) > 0 || len(selRects) > 0 || label != "" || hasSquare {
 		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
 			if debugOn {
 				debugSetRect(i, r) // scrolltest crops captures to this
@@ -452,6 +462,16 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 					W: h.rect[2],
 					H: h.rect[3],
 				}, col, 2)
+			}
+			// The square drag's preview: a thin accent outline in the
+			// same overlay pass (annotate.go).
+			if hasSquare {
+				p.Stroke(ui.Rect{
+					X: r.X + squareRect[0],
+					Y: r.Y + squareRect[1],
+					W: squareRect[2],
+					H: squareRect[3],
+				}, c.Theme().Accent, 2, 1)
 			}
 			// The selection paints above the hits: it is the user's own
 			// action, the thing under the pointer right now.
@@ -491,8 +511,10 @@ func snapScrollTo(y float32) {
 }
 
 // pageInput is the input handler of one page box (the innermost handler
-// where the pointer is — it shadows the scroll's while over a page). A
-// plain left press starts a text selection; the moves and release of a
+// where the pointer is — it shadows the scroll's while over a page). An
+// armed annotation tool takes the gesture first (annotate.go): the note
+// tool consumes the next click, the square tool the next drag. A plain
+// left press starts a text selection; the moves and release of a
 // captured drag keep arriving here in page-local DIPs. Zoom gestures
 // (InputZoom, Ctrl+wheel) forward to the viewer's handler with the
 // anchor re-based from page-local to viewport space, since viewerZoom
@@ -500,6 +522,29 @@ func snapScrollTo(y float32) {
 // still scrolls (the engine's own scroll handling runs when a handler
 // declines), plain clicks have nothing to do.
 func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
+	// Annotation gestures only for permissive tabs, and only while a
+	// tool is armed; unmatched events fall through to the reader's.
+	if t.CanAnnotate() && t.Annot.Tool != AnnotToolNone {
+		switch t.Annot.Tool {
+		case AnnotToolNote:
+			if ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0 {
+				s.PlaceNote(t, i, ev.X, ev.Y)
+				return true
+			}
+		case AnnotToolSquare:
+			switch {
+			case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
+				s.StartSquareDrag(t, i, ev.X, ev.Y)
+				return true
+			case ev.Kind == ui.InputPointerMove && t.Annot.SquareDrag && t.Annot.SquarePage == i:
+				s.ExtendSquareDrag(t, i, ev.X, ev.Y)
+				return true
+			case ev.Kind == ui.InputPointerUp && t.Annot.SquareDrag:
+				s.CommitSquareDrag(t)
+				return true
+			}
+		}
+	}
 	switch {
 	case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
 		s.StartSelection(t, i, ev.X, ev.Y)
