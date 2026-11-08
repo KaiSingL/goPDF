@@ -26,11 +26,24 @@ func statusBar(c *ui.Context, s *AppState) {
 		PaddingX(th.Space(2)).Gap(th.Space(2)).AlignItems(ui.Center).Children(func() {
 		if t == nil {
 			ui.Text(c, "GoPDF").TextColor(th.TextMuted).FontSize(12)
+			// The transient notice (password failures) shows with or
+			// without tabs; SingleLine keeps the bar one row tall.
+			if s.StatusNotice != "" {
+				ui.Text(c, s.StatusNotice).TextColor(th.TextMuted).
+					FontSize(12).SingleLine()
+			}
 			return
 		}
 
 		if debugOn { // debugviewer.go: the frame counter, for capture correlation
 			ui.Textf(c, "f%d", debugFrame.Load()).FontSize(11).TextColor(th.TextMuted)
+		}
+
+		// The transient notice (password failures): muted, one line,
+		// cleared by the next successful open.
+		if s.StatusNotice != "" {
+			ui.Text(c, s.StatusNotice).TextColor(th.TextMuted).
+				FontSize(12).SingleLine()
 		}
 
 		ui.Spacer(c)

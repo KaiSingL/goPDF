@@ -22,6 +22,11 @@
 // saves onto the same worker; its freshness contract (which callbacks
 // guarantee post-edit geometry and pixels) is documented there.
 //
+// Encrypted documents: Open refuses a password-protected file with an
+// error wrapping fitz.ErrNeedsPassword; OpenWithPassword (password.go)
+// authenticates instead, and the permission snapshot (Permissions,
+// CanAnnotate, ...) is captured at open, before the worker exists.
+//
 // # Coordinate systems
 //
 // Page sizes and TextSpan coordinates are in PDF points (1/72 inch), origin
@@ -136,10 +141,20 @@ type Doc struct {
 	// 0,0 carries every page-space coordinate with this offset
 	toc []OutlineNode
 
-	// stMu guards the four derived-state fields above. Open writes them
+	// perms records the granted permissions by Permission rune value
+	// (the fork's codes are ASCII: 'p', 'c', 'e', ... all below 128).
+	// A bitwise mask will NOT do: the rune values overlap in bits, so
+	// "is 'c' granted" cannot be answered from an OR of codes. Written
+	// once before the worker starts, never re-read from the document,
+	// so callers on any goroutine get a cheap stable snapshot.
+	perms [128]bool
+
+	// stMu guards the five derived-state fields above. Open writes them
 	// once before the worker starts; the edit facade (edit.go) rewrites
 	// them on the worker after page-structure mutations; any goroutine
-	// reads them through pageCount/PageSize/PageOrigin/Outline.
+	// reads them through pageCount/PageSize/PageOrigin/Outline/
+	// Permissions. (perms is written at open and never rewritten: saves
+	// do not change the live document's crypt state.)
 	stMu sync.RWMutex
 
 	fit *fitz.Document            // set by Open, read by Close after <-d.done
@@ -163,8 +178,9 @@ type Doc struct {
 }
 
 // Open opens the file at path and returns a Doc ready for rendering.
-// Password-protected files return fitz.ErrNeedsPassword (v1 surfaces the
-// error; v2 adds a password prompt).
+// Password-protected files return an error wrapping fitz.ErrNeedsPassword;
+// open those with OpenWithPassword (password.go), which the v2 password
+// prompt flow drives.
 func Open(path string) (*Doc, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -172,9 +188,23 @@ func Open(path string) (*Doc, error) {
 	}
 	fit, err := fitz.New(abs)
 	if err != nil {
+		// fitz.New hands the Document back TOGETHER with
+		// ErrNeedsPassword (it must be authenticated before use): close
+		// it or its MuPDF context leaks. v1 dropped it on the floor.
+		if fit != nil {
+			fit.Close()
+		}
 		return nil, fmt.Errorf("pdf: open %s: %w", abs, err)
 	}
+	return newDoc(fit, abs)
+}
 
+// newDoc finishes every successful open: it builds the Doc, derives the
+// cached geometry and the permission snapshot on the caller's goroutine
+// (the one that owns the fitz document at this point), then hands the
+// document to the worker via the go statement's happens-before edge.
+// Open and OpenWithPassword share it so the two paths cannot drift.
+func newDoc(fit *fitz.Document, abs string) (*Doc, error) {
 	d := &Doc{
 		path: abs,
 		id:   fmt.Sprintf("doc-%d", docSeq.Add(1)),
@@ -189,6 +219,7 @@ func Open(path string) (*Doc, error) {
 		return nil, err
 	}
 	d.pages, d.sizes, d.origins, d.toc = pages, sizes, origins, toc
+	d.perms = snapshotPermissions(fit)
 
 	// Hand the fitz document to the worker by passing it as an argument: the
 	// `go` statement is the happens-before edge. (A handover task queued on
