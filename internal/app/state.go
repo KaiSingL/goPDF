@@ -255,6 +255,9 @@ func (s *AppState) openTab(path, password string) (*Tab, error) {
 	for _, t := range s.Tabs {
 		if strings.EqualFold(t.Path, mustAbs(path)) {
 			s.SelectTabBy(t.ID)
+			// Reopening an already-open file is a successful open: it
+			// clears the last failure notice the way a fresh open does.
+			s.StatusNotice = ""
 			return t, nil
 		}
 	}
@@ -416,15 +419,28 @@ func (s *AppState) CloseActiveTab() {
 	}
 }
 
-// ReopenClosedTab reopens the most recently closed tab, if any.
+// ReopenClosedTab reopens the most recently closed tab, if any. The entry
+// is consumed only on success: an encrypted doc arms the password prompt
+// instead (handled = true), so a cancel cannot strand the Ctrl+Shift+T
+// entry and the actual open happens later through the prompt's own path.
 func (s *AppState) ReopenClosedTab() bool {
 	if len(s.ClosedPaths) == 0 {
 		return false
 	}
 	path := s.ClosedPaths[0]
-	s.ClosedPaths = s.ClosedPaths[1:]
 	_, err := s.OpenTab(path)
-	return err == nil
+	if err == nil {
+		s.ClosedPaths = s.ClosedPaths[1:]
+		return true
+	}
+	if errors.Is(err, pdf.ErrNeedsPassword) {
+		// The prompt is armed; the unlock itself re-opens the tab, so the
+		// entry stays until the user decides (successful open pops next
+		// attempt; cancel keeps it).
+		return true
+	}
+	s.ClosedPaths = s.ClosedPaths[1:] // hard failure: drop the entry
+	return false
 }
 
 // ToggleSidebar shows or hides the sidebar.

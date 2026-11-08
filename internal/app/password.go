@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
 	"github.com/egoist/mygo/ui"
@@ -156,6 +157,13 @@ func submitPassword(s *AppState, path string) {
 		s.PasswordError = ""
 		s.StatusNotice = ""
 		addSystemRecent(t.Path)
+		// A Ctrl+Shift+T arm left the closed tab's entry at the front so
+		// a cancel could try again; now that the doc managed to open, the
+		// entry's job is done and the next attempt should reach the
+		// following closed tab without a second press.
+		if len(s.ClosedPaths) > 0 && strings.EqualFold(s.ClosedPaths[0], path) {
+			s.ClosedPaths = s.ClosedPaths[1:]
+		}
 		return
 	}
 	if errors.Is(err, pdf.ErrBadPassword) {
