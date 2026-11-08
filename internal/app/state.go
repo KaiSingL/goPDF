@@ -135,6 +135,18 @@ type Tab struct {
 	// it (save.go); plain reads never set it.
 	Dirty bool
 
+	// Presenting is set while the tab's document fills the window one
+	// page at a time (present.go, issue 4). Only the active tab can
+	// carry it: entering requires the active tab, and every change of
+	// the active tab ends presentation first.
+	Presenting bool
+
+	// presentRestore holds the reader view (zoom mode, zoom, scroll
+	// offset) as it was when presentation started, put back on exit.
+	// Presentation never writes the reader's zoom or scroll, so the
+	// restore is exact by construction; the copy is the contract.
+	presentRestore *presentRestore
+
 	index *pdf.Index // set on the UI thread by SetIndex after IndexAsync
 }
 
@@ -196,6 +208,13 @@ type AppState struct {
 	// ShowGoTo toggles the "Go to page" row under the toolbar (the
 	// toolbar's page indicator opens it); gotoRow builds it.
 	ShowGoTo bool
+
+	// PresentFullscreen records that ENTERING presentation mode put the
+	// window full screen, so EXIT takes it back out (present.go). That
+	// flag is the whole saved window state: mygo v0.6.4's
+	// Window.SetFullScreen saves and restores the window placement
+	// itself, verified in the pinned source.
+	PresentFullscreen bool
 
 	ClosedPaths []string // recently closed tab paths, newest first
 	Recents     []string // recent document paths, newest first
@@ -321,7 +340,11 @@ func (s *AppState) openTab(path, password string) (*Tab, error) {
 		t.Zoom = clampZoom(s.Settings.DefaultZoom)
 	}
 	s.Tabs = append(s.Tabs, t)
-	s.ActiveTab = len(s.Tabs) - 1
+	// Activate through the guarded setter: it ends presentation when a
+	// presenting tab is active, which the direct write would skip (an
+	// external open while presenting — OnFileDrop, OnOpenFile,
+	// OnSecondInstance — reaches exactly here on the UI thread).
+	s.SelectTabBy(t.ID)
 	s.StatusNotice = "" // a fresh open clears the last failure notice
 	s.addRecent(t.Path)
 	return t, nil
@@ -330,6 +353,9 @@ func (s *AppState) openTab(path, password string) (*Tab, error) {
 // SelectTab activates the tab at index i.
 func (s *AppState) SelectTab(i int) {
 	if i >= 0 && i < len(s.Tabs) {
+		if i != s.ActiveTab {
+			s.endPresentation() // presentation follows the active tab (present.go)
+		}
 		s.ActiveTab = i
 	}
 }
@@ -338,6 +364,9 @@ func (s *AppState) SelectTab(i int) {
 func (s *AppState) SelectTabBy(id string) {
 	for i, t := range s.Tabs {
 		if t.ID == id {
+			if i != s.ActiveTab {
+				s.endPresentation() // presentation follows the active tab
+			}
 			s.ActiveTab = i
 			return
 		}
@@ -388,6 +417,13 @@ func (s *AppState) CloseTab(id string) {
 		return
 	}
 	t := s.Tabs[idx]
+	// Closing ANY tab while it presents (closing a non-active tab cannot
+	// happen while its peer presents, since the chrome is not built) ends
+	// presentation and hands the window back, else the slide view would
+	// address a closed document's state.
+	if t.Presenting {
+		s.endPresentation()
+	}
 	// A dirty tab closes WITHOUT saving: tabs.go has no confirm/cancel
 	// pattern to reuse, so the choice is a visible status notice over a
 	// silent loss or a new modal (save.go documents the choice).
