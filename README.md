@@ -48,6 +48,7 @@ commercial MuPDF license from Artifex.
 
 ## Notes & limitations
 
-- The MuPDF builds bundled with go-fitz have **no CJK fonts**; CJK PDFs
-  relying on embedded fonts render fine, others may miss glyphs.
+- The MuPDF builds bundled with go-fitz have no CJK fonts; CJK PDFs
+  relying on embedded fonts render fine, others fall back to an OS CJK
+  font when one is found (otherwise unchanged).
 - Password-protected PDFs surface an error in v1 (prompt planned for v2).
