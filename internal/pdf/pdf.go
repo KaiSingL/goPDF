@@ -18,6 +18,10 @@
 // when the doc was closed before the task ran: the UI must treat them as
 // best-effort and re-check tab liveness inside the callback.
 //
+// The editing facade (edit.go) queues annotations, page organization and
+// saves onto the same worker; its freshness contract (which callbacks
+// guarantee post-edit geometry and pixels) is documented there.
+//
 // # Coordinate systems
 //
 // Page sizes and TextSpan coordinates are in PDF points (1/72 inch), origin
@@ -132,6 +136,12 @@ type Doc struct {
 	// 0,0 carries every page-space coordinate with this offset
 	toc []OutlineNode
 
+	// stMu guards the four derived-state fields above. Open writes them
+	// once before the worker starts; the edit facade (edit.go) rewrites
+	// them on the worker after page-structure mutations; any goroutine
+	// reads them through pageCount/PageSize/PageOrigin/Outline.
+	stMu sync.RWMutex
+
 	fit    *fitz.Document            // set by Open, read by Close after <-d.done
 	hi     chan func(*fitz.Document) // page renders: latency-sensitive
 	lo     chan func(*fitz.Document) // thumbnails, index builds
@@ -158,26 +168,19 @@ func Open(path string) (*Doc, error) {
 	}
 
 	d := &Doc{
-		path:  abs,
-		id:    fmt.Sprintf("doc-%d", docSeq.Add(1)),
-		pages: fit.NumPage(),
-		meta:  trimMeta(fit.Metadata()),
-		hi:    make(chan func(*fitz.Document), 64),
-		lo:    make(chan func(*fitz.Document), 128),
-		done:  make(chan struct{}),
+		path: abs,
+		id:   fmt.Sprintf("doc-%d", docSeq.Add(1)),
+		meta: trimMeta(fit.Metadata()),
+		hi:   make(chan func(*fitz.Document), 64),
+		lo:   make(chan func(*fitz.Document), 128),
+		done: make(chan struct{}),
 	}
-	d.sizes = make([][2]float64, d.pages)
-	d.origins = make([][2]float64, d.pages)
-	for i := 0; i < d.pages; i++ {
-		b, err := fit.Bound(i)
-		if err != nil {
-			fit.Close()
-			return nil, fmt.Errorf("pdf: page %d bounds: %w", i, err)
-		}
-		d.sizes[i] = [2]float64{float64(b.Dx()), float64(b.Dy())}
-		d.origins[i] = [2]float64{float64(b.Min.X), float64(b.Min.Y)}
+	pages, sizes, origins, toc, err := deriveGeometry(fit)
+	if err != nil {
+		fit.Close()
+		return nil, err
 	}
-	d.toc = outlineTree(fit) // empty outline is not an error (fitz quirk)
+	d.pages, d.sizes, d.origins, d.toc = pages, sizes, origins, toc
 
 	// Hand the fitz document to the worker by passing it as an argument: the
 	// `go` statement is the happens-before edge. (A handover task queued on
@@ -187,6 +190,27 @@ func Open(path string) (*Doc, error) {
 	d.fit = fit
 	go d.loop(fit)
 	return d, nil
+}
+
+// deriveGeometry walks the live document and rebuilds every piece of
+// derived state Doc caches: page count, per-page sizes and box origins, and
+// the outline tree. Open runs it once before the worker exists; the edit
+// facade re-runs it on the worker after each successful page-structure
+// mutation (insert, rotate, delete, graft), so both callers share one code
+// path and can never drift apart.
+func deriveGeometry(fit *fitz.Document) (pages int, sizes, origins [][2]float64, toc []OutlineNode, err error) {
+	pages = fit.NumPage()
+	sizes = make([][2]float64, pages)
+	origins = make([][2]float64, pages)
+	for i := 0; i < pages; i++ {
+		b, err := fit.Bound(i)
+		if err != nil {
+			return 0, nil, nil, nil, fmt.Errorf("pdf: page %d bounds: %w", i, err)
+		}
+		sizes[i] = [2]float64{float64(b.Dx()), float64(b.Dy())}
+		origins[i] = [2]float64{float64(b.Min.X), float64(b.Min.Y)}
+	}
+	return pages, sizes, origins, outlineTree(fit), nil // empty outline is not an error (fitz quirk)
 }
 
 // loop is the Doc's worker goroutine: the only goroutine that uses fit.
@@ -237,7 +261,7 @@ func (d *Doc) SelectionAsync(page int, x0, y0, x1, y1 float64, fn func(Selection
 	if d.closed.Load() || fn == nil {
 		return
 	}
-	if page < 0 || page >= d.pages {
+	if page < 0 || page >= d.pageCount() {
 		go fn(SelectionResult{}, ErrBadPage)
 		return
 	}
@@ -265,7 +289,7 @@ func (d *Doc) SearchQuadsAsync(page int, needle string, fn func([]HitRect, error
 	if d.closed.Load() || fn == nil {
 		return
 	}
-	if page < 0 || page >= d.pages || needle == "" {
+	if page < 0 || page >= d.pageCount() || needle == "" {
 		if fn != nil {
 			go fn(nil, ErrBadPage)
 		}
@@ -294,8 +318,17 @@ func (d *Doc) Path() string { return d.path }
 // ID returns a unique id for this open instance (a path can be open twice).
 func (d *Doc) ID() string { return d.id }
 
+// pageCount snapshots the cached page count. The edit facade rewrites it on
+// the worker after page mutations, so plain field reads from other
+// goroutines would race; everything internal goes through here.
+func (d *Doc) pageCount() int {
+	d.stMu.RLock()
+	defer d.stMu.RUnlock()
+	return d.pages
+}
+
 // NumPages returns the number of pages.
-func (d *Doc) NumPages() int { return d.pages }
+func (d *Doc) NumPages() int { return d.pageCount() }
 
 // Meta returns document metadata (format, title, author, ...). Values are
 // trimmed of the NUL padding go-fitz's fixed-buffer lookup leaves in place;
@@ -318,6 +351,8 @@ func trimMeta(m map[string]string) map[string]string {
 // PageSize returns the raw page size in points, before any viewer rotation.
 // For 90/270 rotation the caller swaps the values.
 func (d *Doc) PageSize(page int) (w, h float64) {
+	d.stMu.RLock()
+	defer d.stMu.RUnlock()
 	if page < 0 || page >= d.pages {
 		if len(d.sizes) == 0 {
 			return 612, 792 // US Letter fallback
@@ -332,6 +367,8 @@ func (d *Doc) PageSize(page int) (w, h float64) {
 // origin, so mapping them onto a 0,0-anchored view subtracts this. It is
 // 0,0 for ordinary pages and the CropBox offset for cropped ones.
 func (d *Doc) PageOrigin(page int) (x, y float64) {
+	d.stMu.RLock()
+	defer d.stMu.RUnlock()
 	if page < 0 || page >= d.pages {
 		if len(d.origins) == 0 {
 			return 0, 0
@@ -342,7 +379,11 @@ func (d *Doc) PageOrigin(page int) (x, y float64) {
 }
 
 // Outline returns the table of contents tree; empty when the file has none.
-func (d *Doc) Outline() []OutlineNode { return d.toc }
+func (d *Doc) Outline() []OutlineNode {
+	d.stMu.RLock()
+	defer d.stMu.RUnlock()
+	return d.toc
+}
 
 // outlineTree converts fitz's flat leveled ToC into a tree. fitz returns
 // ErrLoadOutline for documents that simply have no outline — not an error.
@@ -396,7 +437,7 @@ func (d *Doc) RenderAsync(req RenderReq, fn func(*image.RGBA, error)) {
 	default:
 		req.Rotate = 0
 	}
-	if req.Page < 0 || req.Page >= d.pages {
+	if req.Page < 0 || req.Page >= d.pageCount() {
 		if fn != nil {
 			go fn(nil, ErrBadPage)
 		}
@@ -476,11 +517,12 @@ func (d *Doc) IndexAsync(fn func(*Index, error)) {
 			}
 			return
 		}
-		ix := &Index{pages: d.pages}
-		ix.Spans = make([][]TextSpan, d.pages)
-		ix.Text = make([]string, d.pages)
+		n := d.pageCount()
+		ix := &Index{pages: n}
+		ix.Spans = make([][]TextSpan, n)
+		ix.Text = make([]string, n)
 		var err error
-		for p := 0; p < d.pages; p++ {
+		for p := 0; p < n; p++ {
 			html, e := f.HTML(p, false)
 			if e != nil {
 				err = e
