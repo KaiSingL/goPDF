@@ -157,6 +157,7 @@ func titleViewMenu(c *ui.Context, s *AppState) {
 		menuItem(m, "Fit Page", withActiveTab(s, func(t *Tab) { t.SetZoomMode(ZoomFitPage) }))
 		menuItem(m, "Rotate Clockwise", withActiveTab(s, func(t *Tab) { t.RotateBy() }))
 		m.Separator()
+		menuItem(m, "Presentation", s.TogglePresenting)
 		menuItem(m, "Toggle Sidebar", func() { s.ToggleSidebar() })
 		m.Submenu("Theme", func(m *ui.Menu) {
 			themeItem := func(label, mode string) {

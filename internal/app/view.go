@@ -49,10 +49,16 @@ func slidePanel(e ui.Element, full float32, want, cond bool) float32 {
 }
 
 // View builds the window's interface from state. MyGo calls it on the main
-// thread whenever a frame is due.
+// thread whenever a frame is due. While presentation mode is on it builds
+// ONLY the slide view (present.go): none of the reader's chrome builds,
+// so none of its keys, clicks or overlays can leak through.
 func (s *AppState) View(c *ui.Context) {
+	drainPending() // run worker-queued updates (tests; window hops directly)
+	if s.presentingTab() != nil {
+		presentView(c, s)
+		return
+	}
 	shortcuts(c, s) // D: app-wide keyboard bindings, window scope (first)
-	drainPending()  // run worker-queued updates (tests; window hops directly)
 
 	// Fill the window: the chrome bars take their natural height and the
 	// content row grows into the rest. Dividers separate the bands and the

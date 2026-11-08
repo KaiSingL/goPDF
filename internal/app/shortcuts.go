@@ -48,6 +48,11 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(ui.Ctrl, ui.KeyW, func() { s.CloseActiveTab() })
 	c.OnShortcut(ui.Ctrl, ui.KeyP, PrintActive)
 
+	// Presentation (present.go): Ctrl+L enters on the active document or
+	// leaves if already presenting. In the slide view, presentView's own
+	// shortcut set replaces this one, so the same chord exits.
+	c.OnShortcut(ui.Ctrl, ui.KeyL, s.TogglePresenting)
+
 	// Ctrl+F opens the search panel AND stores a fresh focus token, which
 	// the panel's field (searchpanel.go) FocusBinds to: the panel opens
 	// already focused, so typing starts immediately.

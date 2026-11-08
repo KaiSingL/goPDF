@@ -222,6 +222,9 @@ func rebuildPalette(s *AppState) {
 			t.RotateBy()
 		}
 	})
+	// Presentation (present.go): toggles on the active document; in the
+	// slide view the palette does not build, so this is entry only.
+	cmd("Presentation", s.TogglePresenting)
 	// Annotation tools (annotate.go, issue 3): only while the active tab
 	// permits them; the run closures re-check at execution time.
 	if at := s.Active(); at != nil && at.CanAnnotate() {
