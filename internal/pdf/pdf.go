@@ -146,13 +146,15 @@ type Doc struct {
 	hi  chan func(*fitz.Document) // page renders: latency-sensitive
 	lo  chan func(*fitz.Document) // thumbnails, index builds
 
-	// renamedFull: the most recent save to Path() was a FULL temp+rename
-	// write (never in place; savePath), so the doc's xref no longer anchors
-	// the file's current end and later incremental saves demote to full
-	// saves. Read and written ONLY by the worker inside savePath; no lock.
-	renamedFull bool
-	closed      atomic.Bool
-	done        chan struct{}
+	// loopGid is the worker goroutine's identity, captured at loop start
+	// so nested facade calls (synchronous Save from inside a callback)
+	// can run inline instead of queueing behind themselves. 0 until set:
+	// the store happens inside the worker with no happens-before edge to
+	// the other goroutines' reads, so it rides an atomic.
+	loopGid atomic.Uint64
+
+	closed atomic.Bool
+	done   chan struct{}
 
 	closeOnce sync.Once // guards the stop sequence; Close is idempotent
 
@@ -225,6 +227,7 @@ func deriveGeometry(fit *fitz.Document) (pages int, sizes, origins [][2]float64,
 // the user jumped to must not queue behind a wall of sidebar thumbnails.
 func (d *Doc) loop(fit *fitz.Document) {
 	defer close(d.done)
+	d.loopGid.Store(currentGid())
 	for {
 		var task func(*fitz.Document)
 		select {

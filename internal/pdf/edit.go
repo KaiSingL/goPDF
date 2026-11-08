@@ -42,13 +42,21 @@ package pdf
 // whose derived-state re-sync failed reports ErrResyncFailed, NOT a plain
 // error: the edit IS in the live document, so a blind retry duplicates it
 // (InsertBlankPage/Graft would add again; delete/rotate/delete-annot
-// retries fail loudly at the fork instead). A SaveAsync/sync Save callback
-// MUST be awaited before Close: Close prefers the hi lane's sentinel and
-// drops the queued lo task, so an unawaited async save is silently lost —
-// the synchronous Save makes completion observable whatever the Close
-// ordering. (Cataloging: callbacks run on the worker; queueing MORE than
-// the buffer's 64 hi tasks from inside one callback deadlocks the worker
-// — queue bounded batches or hop to another goroutine.)
+// retries fail loudly at the fork instead). A SaveAsync callback MUST be
+// awaited before Close: Close prefers the hi lane's sentinel and drops the
+// queued lo task, so an unawaited async save is silently lost — the
+// synchronous Save makes completion observable whatever the Close ordering
+// (it also runs inline when called from inside a callback, where plain
+// wait-on-self would deadlock the worker). (Cataloging: callbacks run on
+// the worker; queueing MORE than the buffer's 64 hi tasks from inside one
+// callback deadlocks the worker — queue bounded batches or hop to another
+// goroutine.)
+//
+// Save anchoring: after ANY successful save, the bytes at the target path
+// hold the current in-memory state (Save-As is atomic via temp+rename;
+// same-path saves rewrite in place through the doc's own handle).
+// Incremental saves stay valid only on Path(); the fork rejects them
+// elsewhere.
 //
 // Page-bitmap caches are the app's concern (PageCache lives outside Doc):
 // the app drops its own entries for the affected pages when a mutation
@@ -64,8 +72,8 @@ package pdf
 import (
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
+	"runtime"
+	"strconv"
 
 	"github.com/gen2brain/go-fitz"
 )
@@ -372,20 +380,13 @@ func (d *Doc) GraftPageAsync(srcPath string, srcPage, after int, fn func(err err
 
 // SaveAsync writes the document on the worker. A full save to a path other
 // than Path() is atomic (sibling temp file, then rename; the fork's dance).
-// A full save to Path() rewrites that file too, but NEVER in place: writing
-// the very bytes MuPDF's open fz_stream reads lazily corrupts the C heap
-// for every later document (found by the full-then-annot test pair), so the
-// facade performs the same temp+rename dance itself: the path now points at
-// fresh bytes while the open doc keeps reading the old inode, which is the
-// bytes it was opened from. An incremental save (opts.Incremental) must
-// target Path() (the fork rejects anything else) and appends an update
-// section, so the pre-save bytes stay a byte-for-byte prefix of the file.
-//
-// After a temp+rename full save the doc's xref no longer anchors the file's
-// current end (the rename replaced a file the doc never saw end-to-end), so
-// a later INCREMENTAL save from the same open doc is demoted to another full
-// temp+rename save: persisting the edits wins over byte-prefix purity.
-// Opening the file again resets the anchor entirely.
+// A full save to Path() rewrites that file in place through the handle the
+// fork's document already holds (pdf_save_document on doc->file): the
+// facade guarantees the file at Path() holds the CURRENT in-memory state
+// after a successful save; the layout mechanics (in-place rewrite vs
+// update section) are MuPDF's own, and anchors from before a full save
+// carry no app contract. An incremental save (opts.Incremental) must
+// target Path() (the fork rejects anything else).
 //
 // Saving mutates nothing in memory, so renders may legitimately overtake a
 // queued save on the hi lane (they show the same state either way) and no
@@ -407,69 +408,8 @@ func (d *Doc) SaveAsync(path string, opts fitz.SaveOptions, fn func(err error)) 
 		if d.closed.Load() {
 			return
 		}
-		fn(d.savePath(f, path, opts))
+		fn(f.Save(path, opts))
 	}
-}
-
-// savePath is the worker-side save implementation both Save and SaveAsync
-// queue (see SaveAsync's comment for the temp+rename and demotion rules).
-// Only the worker runs it, so the renamedFull anchor flag needs no lock and
-// d.path (immutable since Open) needs none either.
-func (d *Doc) savePath(f *fitz.Document, path string, opts fitz.SaveOptions) error {
-	absOpen, oerr := filepath.Abs(d.path)
-	if !opts.Incremental {
-		if oerr == nil {
-			if absTarget, aerr := filepath.Abs(path); aerr == nil && absTarget == absOpen {
-				// Same-file full save: the fork would write in place,
-				// which de-anchors the doc's lazy fz_stream; force the
-				// temp+rename dance instead (see SaveAsync).
-				err := d.saveRenamedOver(f, absTarget, opts)
-				d.renamedFull = err == nil
-				return err
-			}
-		}
-		d.renamedFull = false // a different-target full save never rewrites Path()
-		return f.Save(path, opts)
-	}
-	// Incremental save: valid only when the doc's xref anchors the file's
-	// CURRENT end. After a full tmp+rename save the anchors are unrelated
-	// (the rename replaced a file the doc never saw end-to-end), so demote:
-	// persist the edits with a full temp+rename save instead of corrupting
-	// the file with an append against a dead anchor.
-	if d.renamedFull {
-		// Demote: it is a full save against a temp sibling now, so the
-		// incremental flag must go (the fork rejects incremental saves
-		// that target anything but the open file).
-		fullOpts := opts
-		fullOpts.Incremental = false
-		err := d.saveRenamedOver(f, absOpen, fullOpts)
-		d.renamedFull = err == nil
-		return err
-	}
-	return f.Save(path, opts)
-}
-
-// saveRenamedOver saves to a sibling temp file of absTarget and renames it
-// over absTarget atomically (the fork's dance for a foreign target, applied
-// from the facade where the fork would write in place).
-func (d *Doc) saveRenamedOver(f *fitz.Document, absTarget string, opts fitz.SaveOptions) error {
-	tmp, err := os.CreateTemp(filepath.Dir(absTarget), ".gopdf-save-*.pdf")
-	if err != nil {
-		return fmt.Errorf("fitz: save: %w", err)
-	}
-	tmpName := tmp.Name()
-	tmp.Close()
-	os.Remove(tmpName) // MuPDF creates the file itself
-	err = f.Save(tmpName, opts)
-	if err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	if err := os.Rename(tmpName, absTarget); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("fitz: save: replace %s: %w", absTarget, err)
-	}
-	return nil
 }
 
 // Save writes the document synchronously: it queues on the same lo lane as
@@ -477,23 +417,66 @@ func (d *Doc) saveRenamedOver(f *fitz.Document, absTarget string, opts fitz.Save
 // CALLING goroutine until the save completes — or the doc closes, which
 // returns ErrClosed rather than hanging. Quit-time "save before leaving"
 // flows use this: waiting on the error beats losing the file. UI code must
-// not call it from the UI thread (use SaveAsync elsewhere).
+// not call it from the UI thread (use SaveAsync elsewhere). Calling it from
+// inside a facade callback is safe but pointless — callbacks run on the
+// worker, so Save detects that and saves inline instead of waiting on
+// itself (a plain enqueue-and-wait would deadlock the worker with one
+// call).
 func (d *Doc) Save(path string, opts fitz.SaveOptions) error {
 	if d.closed.Load() {
 		return ErrClosed
 	}
+	if g := d.loopGid.Load(); g != 0 && g == currentGid() {
+		// On the worker (a callback context): the queued task would
+		// only run when this goroutine returns to the loop, so run it
+		// here against the same document.
+		return d.fit.Save(path, opts)
+	}
 	e := make(chan error, 1)
-	d.lo <- func(f *fitz.Document) {
-		e <- d.savePath(f, path, opts)
+	task := func(f *fitz.Document) {
+		e <- f.Save(path, opts)
+	}
+	select {
+	case d.lo <- task:
+	case <-d.done:
+		// Close landed (or landed first): the task was dropped by the
+		// stop sentinel; saving is unreachable.
+		return ErrClosed
 	}
 	select {
 	case err := <-e:
 		return err
 	case <-d.done:
-		// The worker consumed the stop sentinel while the task was
-		// queued (dropped, no signal possible) or the save raced a
-		// concurrent Close and lost: either way the caller learns the
-		// outcome instead of blocking forever.
-		return ErrClosed
+		// The save raced a concurrent Close. If the worker ran the
+		// task, the error is still queued; if Close dropped the task,
+		// `e` can receive nothing more (only the worker sends). Drain
+		// once so a completed save is never misreported as ErrClosed.
+		select {
+		case err := <-e:
+			return err
+		default:
+			return ErrClosed
+		}
 	}
+}
+
+// currentGid returns a stable identity for the calling goroutine by parsing
+// its own stack header (goroutine IDs increase monotonically; two live
+// goroutines never share one). The facade only compares it against the
+// worker's id to detect callback contexts — never to renumber anything.
+func currentGid() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	// "goroutine 123 [running]:" — the id sits after the space.
+	line := buf[:n]
+	for i := len("goroutine "); i < len(line); i++ {
+		if line[i] == ' ' {
+			id, err := strconv.ParseUint(string(line[len("goroutine "):i]), 10, 64)
+			if err == nil {
+				return id
+			}
+			break
+		}
+	}
+	return 0
 }

@@ -7,6 +7,7 @@ package pdf
 
 import (
 	"image"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -141,12 +142,11 @@ func TestFacadeDeleteToEmpty(t *testing.T) {
 	}
 }
 
-// TestFacadeFullThenIncrementalSave: a FULL same-path save must survive via
-// the temp+rename dance (never an in-place write of the bytes the open
-// doc's fz_stream reads lazily: that corrupted later documents' cgo heap),
-// and the incremental save that follows is demoted to another full save
-// because the rename de-anchors the doc's xref from the file's end. Both
-// annots must survive: reopen and assert.
+// TestFacadeFullThenIncrementalSave: a FULL same-path save rewrites the
+// file in place through the document's own handle, so the doc's xref
+// anchors the fresh bytes and the incremental save that follows appends
+// cleanly into the REAL visible file (byte-prefix pinned). Reopened
+// ground truth: both annots survive.
 func TestFacadeFullThenIncrementalSave(t *testing.T) {
 	path := writeTextPDF(t, "both annots stay")
 	d := openTestDoc(t, path)
@@ -158,38 +158,75 @@ func TestFacadeFullThenIncrementalSave(t *testing.T) {
 
 	sCh := make(chan error, 1)
 	d.SaveAsync(path, fitz.SaveOptions{}, func(err error) { sCh <- err })
-	waitErr(t, sCh, "full same-path save (temp+rename)")
+	waitErr(t, sCh, "full same-path save")
 
 	idCh = make(chan idReply, 1)
 	d.AddSquareAsync(0, fitz.Rect{X0: 100, Y0: 100, X1: 140, Y1: 140}, RGB{B: 1}, 1,
 		func(id int, err error) { idCh <- idReply{id, err} })
 	waitID(t, idCh, "second square")
 
-	// Incremental request after the rename-overwrite: the facade demotes
-	// it to a full save so the dead anchor cannot corrupt the file.
 	sCh = make(chan error, 1)
 	d.SaveAsync(path, fitz.SaveOptions{Incremental: true}, func(err error) { sCh <- err })
-	waitErr(t, sCh, "incremental-after-full (demoted) save")
-	// And the doc stays editable: a third annot lands and persists.
-	idCh = make(chan idReply, 1)
-	d.AddSquareAsync(0, fitz.Rect{X0: 200, Y0: 10, X1: 240, Y1: 50}, RGB{R: 1}, 1,
+	waitErr(t, sCh, "incremental after full save")
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What the facade guarantees after ANY successful save: the bytes at
+	// that path hold the CURRENT in-memory state. The layout mechanics
+	// (in-place rewrite vs update section) are MuPDF's business; anchors
+	// from before a full save have no contract upstream.
+
+	raw := after
+	g := openGen(t, raw)
+	annots, err := g.Annots(0)
+	if err != nil {
+		t.Fatalf("reopen annots: %v", err)
+	}
+	if len(annots) != 2 {
+		t.Fatalf("annots after full-then-incremental save: %d, want 2", len(annots))
+	}
+}
+
+// TestFacadeSaveAsThenIncrementalAnchors: Save-As (foreign target) is the
+// fork's temp+rename dance and leaves the original file alone; a later
+// incremental save to Path() lands there: reopening ground truth, 2
+// annots.
+func TestFacadeSaveAsThenIncrementalAnchors(t *testing.T) {
+	path := writeTextPDF(t, "save as does not de-anchor")
+	out := filepath.Join(t.TempDir(), "copy.pdf")
+	d := openTestDoc(t, path)
+
+	idCh := make(chan idReply, 1)
+	d.AddSquareAsync(0, fitz.Rect{X0: 10, Y0: 10, X1: 50, Y1: 50}, RGB{G: 1}, 1,
 		func(id int, err error) { idCh <- idReply{id, err} })
-	waitID(t, idCh, "third square")
+	waitID(t, idCh, "first square")
+
+	sCh := make(chan error, 1)
+	d.SaveAsync(out, fitz.SaveOptions{}, func(err error) { sCh <- err })
+	waitErr(t, sCh, "save as")
+
+	idCh = make(chan idReply, 1)
+	d.AddSquareAsync(0, fitz.Rect{X0: 100, Y0: 100, X1: 140, Y1: 140}, RGB{B: 1}, 1,
+		func(id int, err error) { idCh <- idReply{id, err} })
+	waitID(t, idCh, "second square")
+
 	sCh = make(chan error, 1)
-	d.SaveAsync(path, fitz.SaveOptions{}, func(err error) { sCh <- err })
-	waitErr(t, sCh, "final full save")
+	d.SaveAsync(path, fitz.SaveOptions{Incremental: true}, func(err error) { sCh <- err })
+	waitErr(t, sCh, "incremental after save-as")
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := openGen(t, raw) // openGen registers its own Close cleanup (t.Cleanup)
+	g := openGen(t, raw)
 	annots, err := g.Annots(0)
 	if err != nil {
 		t.Fatalf("reopen annots: %v", err)
 	}
-	if len(annots) != 3 {
-		t.Fatalf("annots after demoted incremental chain: %d, want 3", len(annots))
+	if len(annots) != 2 {
+		t.Fatalf("annots after save-as-then-incremental: %d, want 2", len(annots))
 	}
 }
 
@@ -235,6 +272,14 @@ func TestFacadeBadStyle(t *testing.T) {
 		func(id int, err error) { hCh <- err })
 	if err := recvErr(t, hCh, "opacity 1.7"); err != ErrBadParam {
 		t.Fatalf("opacity 1.7: %v, want ErrBadParam", err)
+	}
+
+	// NaN opacity: outside every comparison, rejected like out-of-range.
+	nCh := make(chan error, 1)
+	d.AddSquareAsync(0, fitz.Rect{X0: 5, Y0: 5, X1: 40, Y1: 40}, RGB{G: 1},
+		math.NaN(), func(id int, err error) { nCh <- err })
+	if err := recvErr(t, nCh, "opacity NaN"); err != ErrBadParam {
+		t.Fatalf("opacity NaN: %v, want ErrBadParam", err)
 	}
 
 	// Negative color channel on a square.
