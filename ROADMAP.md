@@ -1,4 +1,8 @@
-# goPDF — Roadmap
+# goPDF — Roadmap (post-v2 status: ALL ISSUES SHIPPED)
+
+> Status: the five tracked v2 issues below are implemented, reviewed
+> and merged to master (as of the 438b566 session). Deferred items listed
+> per issue remain the only open work.
 
 The v1.0 MVP is complete (see PLAN.md). This file tracks the remaining
 features: the spec's v2.0 list plus the editing UX the vendored go-fitz
