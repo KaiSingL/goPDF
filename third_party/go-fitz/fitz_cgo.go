@@ -141,6 +141,148 @@ void drop_string(fz_context *ctx, char *s) {
 	fz_free(ctx, s);
 }
 
+// GoPDF patch: OS CJK fallback font. The bundled MuPDF ships with TOFU_CJK
+// (config.h), so it carries no CJK font and PDFs whose CJK fonts are NOT
+// embedded fail their font load — MuPDF then substitutes its hail-mary
+// Helvetica, painting mojibake glyphs and extracting garbage text. MuPDF
+// asks the embedder for fonts through the hooks of
+// fz_install_load_system_font_funcs:
+//   - the CJK hook (name, ordering, serif) fires while loading a
+//     non-embedded CIDFont of an Adobe-GB1/CNS1/Japan1/Korea1 collection
+//     (pdf-font.c pdf_load_substitute_cjk_font) — the PDF route;
+//   - the fallback hook (script, language, serif, bold, italic) fires from
+//     fz_encode_character_with_fallback (fz_show_string/measure and the
+//     story/HTML layout; the PDF content interpreter never calls it).
+// Both hooks lazily load ONE font from an OS path and hand out kept
+// references. The record rides in the context's user slot, so every
+// Document context owns its private font and no state is shared across
+// contexts (MuPDF requires one goroutine per context anyway).
+struct gopdf_cjk_rec {
+	char *path;    // OS font file, fz_strdup'd
+	fz_font *font; // created on first request; this record holds one reference
+	int failed;    // load failed once: never retry, render as before
+};
+
+// UCDN script numbers, from the ucdn.h MuPDF 1.28 bundles (not shipped in
+// the fork's headers, so pinned here with its upstream path).
+#define GOPDF_SCRIPT_COMMON 0
+#define GOPDF_SCRIPT_INHERITED 40
+#define GOPDF_SCRIPT_HANGUL 24
+#define GOPDF_SCRIPT_HIRAGANA 32
+#define GOPDF_SCRIPT_KATAKANA 33
+#define GOPDF_SCRIPT_BOPOMOFO 34
+#define GOPDF_SCRIPT_HAN 35
+
+static struct gopdf_cjk_rec *gopdf_cjk_rec_of(fz_context *ctx) {
+	return (struct gopdf_cjk_rec *)fz_user_context(ctx);
+}
+
+// gopdf_cjk_font returns a kept reference to the fallback font, loading the
+// OS file on first use; NULL (rendering exactly as before) when this
+// context has no install or the file cannot be loaded.
+static fz_font *gopdf_cjk_font(fz_context *ctx) {
+	struct gopdf_cjk_rec *rec = gopdf_cjk_rec_of(ctx);
+	if (rec == NULL || rec->failed)
+		return NULL;
+	if (rec->font == NULL) {
+		fz_try(ctx)
+			// index 0: first face of .ttc collections (msyh.ttc,
+			// PingFang.ttc, NotoSansCJK ttc), the only face of .ttf files
+			rec->font = fz_new_font_from_file(ctx, "gopdf-cjk-fallback", rec->path, 0, 0);
+		fz_catch(ctx) {
+			rec->failed = 1;
+			return NULL;
+		}
+	}
+	return fz_keep_font(ctx, rec->font);
+}
+
+// The PDF route: pdf_load_substitute_cjk_font asks for a font by Adobe
+// collection ordering. One OS font answers every ordering; name and style
+// are ignored (a wrong-style CJK glyph beats no glyph at all).
+static fz_font *gopdf_load_system_cjk_font(fz_context *ctx, const char *name, int ordering, int serif) {
+	(void)name;
+	(void)serif;
+	if (ordering == FZ_ADOBE_CNS || ordering == FZ_ADOBE_GB ||
+		ordering == FZ_ADOBE_JAPAN || ordering == FZ_ADOBE_KOREA)
+		return gopdf_cjk_font(ctx);
+	return NULL;
+}
+
+// The story/HTML route: only CJK scripts get the font. zh/ja/ko language
+// tags additionally cover COMMON/INHERITED characters (CJK punctuation is
+// script-common) without ever matching a Latin run.
+static fz_font *gopdf_load_system_fallback_font(fz_context *ctx, int script, int language, int serif, int bold, int italic) {
+	(void)serif;
+	(void)bold;
+	(void)italic;
+	switch (script) {
+	case GOPDF_SCRIPT_HANGUL:
+	case GOPDF_SCRIPT_HIRAGANA:
+	case GOPDF_SCRIPT_KATAKANA:
+	case GOPDF_SCRIPT_BOPOMOFO:
+	case GOPDF_SCRIPT_HAN:
+		return gopdf_cjk_font(ctx);
+	}
+	if (script == GOPDF_SCRIPT_COMMON || script == GOPDF_SCRIPT_INHERITED) {
+		switch (language) {
+		case FZ_LANG_ko:
+		case FZ_LANG_ja:
+		case FZ_LANG_zh:
+		case FZ_LANG_zh_Hans:
+		case FZ_LANG_zh_Hant:
+			return gopdf_cjk_font(ctx);
+		}
+	}
+	return NULL;
+}
+
+// gopdf_install_cjk_fallback arms ctx's CJK system-font hooks with path as
+// the fallback font file. Returns 1 when armed, 0 when path is empty or the
+// context is already carrying an install (per-context once, a no-op) — the
+// caller treats 0 as "render exactly as before". The font itself is NOT
+// loaded here: documents that never hit the hook pay nothing.
+int gopdf_install_cjk_fallback(fz_context *ctx, const char *path) {
+	struct gopdf_cjk_rec *rec;
+	char *dup = NULL;
+
+	fz_var(dup);
+
+	if (path == NULL || !*path || fz_user_context(ctx) != NULL)
+		return 0;
+
+	fz_try(ctx)
+		dup = fz_strdup(ctx, path);
+	fz_catch(ctx)
+		return 0;
+
+	fz_try(ctx) {
+		rec = fz_malloc_struct(ctx, struct gopdf_cjk_rec);
+		rec->path = dup;
+	}
+	fz_catch(ctx) {
+		fz_free(ctx, dup);
+		return 0;
+	}
+
+	fz_set_user_context(ctx, rec);
+	fz_install_load_system_font_funcs(ctx, NULL, gopdf_load_system_cjk_font, gopdf_load_system_fallback_font);
+	return 1;
+}
+
+// gopdf_drop_cjk_fallback releases the install's record and font reference.
+// Call before fz_drop_context (Document.Close); fontdescs still holding
+// kept references drop them as the context's store is emptied.
+void gopdf_drop_cjk_fallback(fz_context *ctx) {
+	struct gopdf_cjk_rec *rec = gopdf_cjk_rec_of(ctx);
+	if (rec == NULL)
+		return;
+	fz_drop_font(ctx, rec->font);
+	fz_free(ctx, rec->path);
+	fz_free(ctx, rec);
+	fz_set_user_context(ctx, NULL);
+}
+
 static void silent_warning(void *user, const char *message) {}
 
 void silence_warnings(fz_context *ctx) {
@@ -206,6 +348,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -571,6 +714,68 @@ func (f *Document) SelectionQuads(pageNumber int, x0, y0, x1, y1 float64) ([]Sea
 	return out, sel, nil
 }
 
+// cjkFallbackCandidates lists, per platform, the OS font files probed as
+// the CJK fallback, in order. A plain stat decides; nothing parses or
+// probes the font itself. (GoPDF fork.)
+func cjkFallbackCandidates() []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{
+			`C:\Windows\Fonts\msyh.ttc`,   // Microsoft YaHei
+			`C:\Windows\Fonts\simhei.ttf`, // SimHei
+			`C:\Windows\Fonts\simsun.ttc`, // SimSun
+		}
+	case "darwin":
+		return []string{
+			"/System/Library/Fonts/PingFang.ttc",
+			"/System/Library/Fonts/Hiragino Sans GB.ttc",
+			"/System/Library/Fonts/STHeiti Light.ttc",
+			"/System/Library/Fonts/STHeiti Medium.ttc",
+			"/System/Library/Fonts/Supplemental/Songti.ttc",
+		}
+	default: // linux and the BSDs: the usual CJK font packages
+		return []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
+			"/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+		}
+	}
+}
+
+// CJKFallbackFontPath returns the first OS CJK font candidate that exists
+// (a plain file stat; no font probing). goPDF arms MuPDF's system-font
+// hooks with it so non-embedded-font CJK PDFs stop painting blanks. (GoPDF
+// fork.)
+func CJKFallbackFontPath() (string, bool) {
+	for _, p := range cjkFallbackCandidates() {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// InstallCJKFallback arms this document's context to fall back to the OS
+// font at path when a document asks MuPDF for a CJK system font — the
+// bundled libraries carry no CJK fonts, so PDFs whose CJK fonts are not
+// embedded otherwise fail their font load. Best-effort by design: it
+// returns false when the context is already armed or path is empty, and a
+// font that cannot be loaded later is dropped silently, leaving rendering
+// exactly as before. The font loads lazily on first use, so documents that
+// never ask pay nothing. Call before first use (the opening code does);
+// Close releases the install. (GoPDF fork.)
+func (f *Document) InstallCJKFallback(path string) bool {
+	f.mtx.Lock()
+	defer f.mtx.Unlock()
+
+	cpath := C.CString(path)
+	defer C.free(unsafe.Pointer(cpath))
+	return C.gopdf_install_cjk_fallback(f.ctx, cpath) != 0
+}
+
 // ImagePNG returns image for given page number as PNG bytes.
 func (f *Document) ImagePNG(pageNumber int, dpi float64) ([]byte, error) {
 	f.mtx.Lock()
@@ -910,12 +1115,14 @@ func (f *Document) Bound(pageNumber int) (image.Rectangle, error) {
 
 // Close closes the underlying fitz document.
 func (f *Document) Close() error {
-	// GoPDF patch: drop the cached stext pages before the context they
-	// live in.
+	// GoPDF patch: drop the cached stext pages and the CJK fallback
+	// install (its font reference) before the context they live in.
 	for _, t := range f.stextPages {
 		C.fz_drop_stext_page(f.ctx, t)
 	}
 	f.stextPages, f.stextOrder = nil, nil
+
+	C.gopdf_drop_cjk_fallback(f.ctx)
 
 	if f.stream != nil {
 		C.fz_drop_stream(f.ctx, f.stream)

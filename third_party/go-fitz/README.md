@@ -15,7 +15,7 @@ Go wrapper for [MuPDF](http://mupdf.com/) fitz library that can extract pages fr
 
 ### Notes
 
-The bundled libraries are built without CJK fonts, if you need them you must use the external library.
+The bundled libraries are built without CJK fonts; `Document.InstallCJKFallback` (see GOPDF_PATCHES.md patch 4) makes rendering fall back to an OS CJK font when one is found, otherwise it is unchanged. If you need bundled CJK fonts you must use the external library.
 
 Concurrent rendering is supported when each goroutine uses its own `Document` (a separate MuPDF context). Concurrency on a single `Document`, including racing with `Close`, is not supported.
 
