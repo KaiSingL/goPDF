@@ -32,6 +32,23 @@ package pdf
 //   - Calls issued before the mutation callback fired observe old or new
 //     state in queue order; a render whose page index vanished mid-flight
 //     gets the MuPDF page error through its callback, never a panic.
+//   - All callers validate positions against the CACHED page count on their
+//     own goroutine (check-then-act): when a structure mutation is in
+//     flight, AnnotsAsync or DeleteAnnotAsync may reject a page about to
+//     exist (ErrBadPage); the reverse window degrades to a fork error
+//     callback. Neither case panics, matching RenderAsync's shape.
+//
+// The failure halves are worth spelling out: a mutation that applied but
+// whose derived-state re-sync failed reports ErrResyncFailed, NOT a plain
+// error: the edit IS in the live document, so a blind retry duplicates it
+// (InsertBlankPage/Graft would add again; delete/rotate/delete-annot
+// retries fail loudly at the fork instead). A SaveAsync/sync Save callback
+// MUST be awaited before Close: Close prefers the hi lane's sentinel and
+// drops the queued lo task, so an unawaited async save is silently lost —
+// the synchronous Save makes completion observable whatever the Close
+// ordering. (Cataloging: callbacks run on the worker; queueing MORE than
+// the buffer's 64 hi tasks from inside one callback deadlocks the worker
+// — queue bounded batches or hop to another goroutine.)
 //
 // Page-bitmap caches are the app's concern (PageCache lives outside Doc):
 // the app drops its own entries for the affected pages when a mutation
@@ -47,6 +64,8 @@ package pdf
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 
 	"github.com/gen2brain/go-fitz"
 )
@@ -58,6 +77,18 @@ var (
 	ErrBadQuads = fmt.Errorf("pdf: markup annotation needs at least one quad")
 	// ErrBadSize: a blank page needs positive, finite dimensions.
 	ErrBadSize = fmt.Errorf("pdf: bad page size")
+	// ErrBadParam: an annotation color component or opacity is outside
+	// 0..1, or NaN. MuPDF writes the raw value into /C//CA and most
+	// viewers clamp, so a rejected call beats a PDF that renders
+	// differently in every reader.
+	ErrBadParam = fmt.Errorf("pdf: annot color/opacity out of range")
+	// ErrResyncFailed is reported when a structural mutation APPLIED but
+	// the derived state (page count/sizes/origins/outline) could not be
+	// re-derived: the edit is live, retrying it would duplicate it (see
+	// the retry table in the freshness contract above), and some reads
+	// (PageSize, NumPages, Outline) may return stale values until the
+	// doc is closed and reopened.
+	ErrResyncFailed = fmt.Errorf("pdf: edit applied but page state resync failed")
 )
 
 // RGB is one annotation color. Components run 0..1, the scale PDF color
@@ -132,6 +163,17 @@ func (d *Doc) addAnnot(page int, t fitz.AnnotType, e fitz.AnnotEdit, fn func(id 
 	}
 }
 
+// badStyle reports color components or opacity outside 0..1 (NaN fails
+// both comparisons). Only the kinds that carry /C or /CA are checked.
+func badStyle(color RGB, opacity float64) bool {
+	for _, c := range []float64{color.R, color.G, color.B, opacity} {
+		if !(c >= 0 && c <= 1) {
+			return true
+		}
+	}
+	return false
+}
+
 // AddHighlightAsync highlights text over quads (page space, points,
 // top-left origin, fz_quad corner order) with color and opacity (0..1).
 // Markup annots derive their rect from the quads; none is stored.
@@ -141,6 +183,10 @@ func (d *Doc) AddHighlightAsync(page int, quads []fitz.Quad, color RGB, opacity 
 	}
 	if len(quads) == 0 {
 		go fn(0, ErrBadQuads)
+		return
+	}
+	if badStyle(color, opacity) {
+		go fn(0, ErrBadParam)
 		return
 	}
 	d.addAnnot(page, fitz.AnnotHighlight, fitz.AnnotEdit{
@@ -172,6 +218,13 @@ func (d *Doc) AddFreeTextAsync(page int, rect fitz.Rect, text string, fn func(id
 // setter, and adding one would mean patching the fork, which this facade
 // must not do.
 func (d *Doc) AddSquareAsync(page int, rect fitz.Rect, color RGB, opacity float64, fn func(id int, err error)) {
+	if d.closed.Load() || fn == nil {
+		return
+	}
+	if badStyle(color, opacity) {
+		go fn(0, ErrBadParam)
+		return
+	}
 	d.addAnnot(page, fitz.AnnotSquare, fitz.AnnotEdit{
 		Rect: &rect, Color: []float64{color.R, color.G, color.B}, Opacity: &opacity,
 	}, fn)
@@ -201,8 +254,9 @@ func (d *Doc) DeleteAnnotAsync(page, id int, fn func(err error)) {
 // count, sizes, origins, outline) and drops the text index built for the
 // old page set. fn fires only after both steps, which is what pins the
 // freshness contract above. A re-sync failure after a successful mutation
-// reports the re-sync error: the document is edited but the cached
-// geometry may be stale, and the caller must treat the edit as unreflected.
+// reports ErrResyncFailed (wrapped closest to the cause): the edit IS in
+// the live document and blind retries would duplicate it, while parts of
+// the cached state may be stale until close/reopen.
 func (d *Doc) mutatePages(mutate func(f *fitz.Document) error, fn func(err error)) {
 	if d.closed.Load() || fn == nil {
 		return
@@ -215,7 +269,11 @@ func (d *Doc) mutatePages(mutate func(f *fitz.Document) error, fn func(err error
 			fn(err)
 			return
 		}
-		fn(d.resyncPages(f))
+		if err := d.resyncPages(f); err != nil {
+			fn(fmt.Errorf("%w: %v", ErrResyncFailed, err))
+			return
+		}
+		fn(nil)
 	}
 }
 
@@ -312,12 +370,22 @@ func (d *Doc) GraftPageAsync(srcPath string, srcPage, after int, fn func(err err
 	}, fn)
 }
 
-// SaveAsync writes the document on the worker. A save to a path other than
-// Path() is atomic (sibling temp file, then rename; the fork's dance). A
-// full save to Path() rewrites the open file in place, mutool clean
-// style. An incremental save (opts.Incremental) must target Path() (the
-// fork rejects anything else) and appends an update section, so the
-// pre-save bytes stay a byte-for-byte prefix of the file.
+// SaveAsync writes the document on the worker. A full save to a path other
+// than Path() is atomic (sibling temp file, then rename; the fork's dance).
+// A full save to Path() rewrites that file too, but NEVER in place: writing
+// the very bytes MuPDF's open fz_stream reads lazily corrupts the C heap
+// for every later document (found by the full-then-annot test pair), so the
+// facade performs the same temp+rename dance itself: the path now points at
+// fresh bytes while the open doc keeps reading the old inode, which is the
+// bytes it was opened from. An incremental save (opts.Incremental) must
+// target Path() (the fork rejects anything else) and appends an update
+// section, so the pre-save bytes stay a byte-for-byte prefix of the file.
+//
+// After a temp+rename full save the doc's xref no longer anchors the file's
+// current end (the rename replaced a file the doc never saw end-to-end), so
+// a later INCREMENTAL save from the same open doc is demoted to another full
+// temp+rename save: persisting the edits wins over byte-prefix purity.
+// Opening the file again resets the anchor entirely.
 //
 // Saving mutates nothing in memory, so renders may legitimately overtake a
 // queued save on the hi lane (they show the same state either way) and no
@@ -325,6 +393,12 @@ func (d *Doc) GraftPageAsync(srcPath string, srcPage, after int, fn func(err err
 // freeze page turns. Everything queued before the save is in the file;
 // hi tasks that overtake a still-queued save also end up in it, which is
 // harmless (the file is written from the same in-memory state).
+//
+// The callback is a promise the app MUST honor: Close drops queued lo
+// tasks (its sentinel rides the hi lane, which always wins), so a save
+// that is still queued when Close runs is silently lost and fn never
+// fires — data loss, unlike a dropped render. Quit-time saving goes
+// through the synchronous Save instead.
 func (d *Doc) SaveAsync(path string, opts fitz.SaveOptions, fn func(err error)) {
 	if d.closed.Load() || fn == nil {
 		return
@@ -333,6 +407,93 @@ func (d *Doc) SaveAsync(path string, opts fitz.SaveOptions, fn func(err error)) 
 		if d.closed.Load() {
 			return
 		}
-		fn(f.Save(path, opts))
+		fn(d.savePath(f, path, opts))
+	}
+}
+
+// savePath is the worker-side save implementation both Save and SaveAsync
+// queue (see SaveAsync's comment for the temp+rename and demotion rules).
+// Only the worker runs it, so the renamedFull anchor flag needs no lock and
+// d.path (immutable since Open) needs none either.
+func (d *Doc) savePath(f *fitz.Document, path string, opts fitz.SaveOptions) error {
+	absOpen, oerr := filepath.Abs(d.path)
+	if !opts.Incremental {
+		if oerr == nil {
+			if absTarget, aerr := filepath.Abs(path); aerr == nil && absTarget == absOpen {
+				// Same-file full save: the fork would write in place,
+				// which de-anchors the doc's lazy fz_stream; force the
+				// temp+rename dance instead (see SaveAsync).
+				err := d.saveRenamedOver(f, absTarget, opts)
+				d.renamedFull = err == nil
+				return err
+			}
+		}
+		d.renamedFull = false // a different-target full save never rewrites Path()
+		return f.Save(path, opts)
+	}
+	// Incremental save: valid only when the doc's xref anchors the file's
+	// CURRENT end. After a full tmp+rename save the anchors are unrelated
+	// (the rename replaced a file the doc never saw end-to-end), so demote:
+	// persist the edits with a full temp+rename save instead of corrupting
+	// the file with an append against a dead anchor.
+	if d.renamedFull {
+		// Demote: it is a full save against a temp sibling now, so the
+		// incremental flag must go (the fork rejects incremental saves
+		// that target anything but the open file).
+		fullOpts := opts
+		fullOpts.Incremental = false
+		err := d.saveRenamedOver(f, absOpen, fullOpts)
+		d.renamedFull = err == nil
+		return err
+	}
+	return f.Save(path, opts)
+}
+
+// saveRenamedOver saves to a sibling temp file of absTarget and renames it
+// over absTarget atomically (the fork's dance for a foreign target, applied
+// from the facade where the fork would write in place).
+func (d *Doc) saveRenamedOver(f *fitz.Document, absTarget string, opts fitz.SaveOptions) error {
+	tmp, err := os.CreateTemp(filepath.Dir(absTarget), ".gopdf-save-*.pdf")
+	if err != nil {
+		return fmt.Errorf("fitz: save: %w", err)
+	}
+	tmpName := tmp.Name()
+	tmp.Close()
+	os.Remove(tmpName) // MuPDF creates the file itself
+	err = f.Save(tmpName, opts)
+	if err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, absTarget); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("fitz: save: replace %s: %w", absTarget, err)
+	}
+	return nil
+}
+
+// Save writes the document synchronously: it queues on the same lo lane as
+// SaveAsync (everything about path handling applies equally) and blocks the
+// CALLING goroutine until the save completes — or the doc closes, which
+// returns ErrClosed rather than hanging. Quit-time "save before leaving"
+// flows use this: waiting on the error beats losing the file. UI code must
+// not call it from the UI thread (use SaveAsync elsewhere).
+func (d *Doc) Save(path string, opts fitz.SaveOptions) error {
+	if d.closed.Load() {
+		return ErrClosed
+	}
+	e := make(chan error, 1)
+	d.lo <- func(f *fitz.Document) {
+		e <- d.savePath(f, path, opts)
+	}
+	select {
+	case err := <-e:
+		return err
+	case <-d.done:
+		// The worker consumed the stop sentinel while the task was
+		// queued (dropped, no signal possible) or the save raced a
+		// concurrent Close and lost: either way the caller learns the
+		// outcome instead of blocking forever.
+		return ErrClosed
 	}
 }

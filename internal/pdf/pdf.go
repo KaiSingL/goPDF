@@ -142,11 +142,17 @@ type Doc struct {
 	// reads them through pageCount/PageSize/PageOrigin/Outline.
 	stMu sync.RWMutex
 
-	fit    *fitz.Document            // set by Open, read by Close after <-d.done
-	hi     chan func(*fitz.Document) // page renders: latency-sensitive
-	lo     chan func(*fitz.Document) // thumbnails, index builds
-	closed atomic.Bool
-	done   chan struct{}
+	fit *fitz.Document            // set by Open, read by Close after <-d.done
+	hi  chan func(*fitz.Document) // page renders: latency-sensitive
+	lo  chan func(*fitz.Document) // thumbnails, index builds
+
+	// renamedFull: the most recent save to Path() was a FULL temp+rename
+	// write (never in place; savePath), so the doc's xref no longer anchors
+	// the file's current end and later incremental saves demote to full
+	// saves. Read and written ONLY by the worker inside savePath; no lock.
+	renamedFull bool
+	closed      atomic.Bool
+	done        chan struct{}
 
 	closeOnce sync.Once // guards the stop sequence; Close is idempotent
 
