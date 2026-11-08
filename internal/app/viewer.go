@@ -409,13 +409,34 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 	// the draw callback, which may run repeatedly.
 	hits := hitRects(t, i, z)
 	selRects := selPaintRects(t, i, pageDipScale(t, i, z))
-	var curCol, otherCol, selCol ui.Color
-	if len(hits) > 0 || len(selRects) > 0 {
+	// The existing-annot overlay (annotate.go): request the page's
+	// listing (once per reload generation), then paint it under the
+	// hits. Entirely off for tabs that cannot annotate: their annots
+	// show through the RENDERED appearance only, never double-painted.
+	s.requestAnnots(t, i)
+	annots := annotPaintList(t, i, pageDipScale(t, i, z))
+	// The square drag's live preview (annotate.go): a thin outline in
+	// the same overlay pass, the selection/hit painting style.
+	var squareRect [4]float32
+	if t.Annot.SquareDrag && t.Annot.SquarePage == i {
+		x0, y0, x1, y1 := t.squareRectPts()
+		squareRect = spanDipRect(t, i, pdf.TextSpan{
+			X: x0, Y: y0, W: x1 - x0, H: y1 - y0,
+		}, pageDipScale(t, i, z))
+	}
+	var curCol, otherCol, selCol, annotFill, annotLine ui.Color
+	hasSquare := t.Annot.SquareDrag && t.Annot.SquarePage == i
+	if len(hits) > 0 || len(selRects) > 0 || hasSquare || len(annots) > 0 {
 		curCol, otherCol = hitCurLight, hitOtherLight
 		if c.Theme().Dark {
 			curCol, otherCol = hitCurDark, hitOtherDark
 		}
 		selCol = c.Theme().Accent.Alpha(0.30)
+		// The rendered bitmap already draws each annot's appearance;
+		// the overlay's translucent shapes are the hit affordance and
+		// stay subtle so nothing reads as double-painted.
+		annotFill = ui.RGBA(0xFF, 0xE1, 0x4D, 0.20)
+		annotLine = ui.RGBA(0, 0, 0, 0.35)
 	}
 
 	bm := pageBitmap(t, i, renderZ, z)
@@ -436,10 +457,39 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 			ui.Textf(c, "Page %d", i+1).TextColor(c.Theme().TextMuted)
 		})
 	})
-	if len(hits) > 0 || len(selRects) > 0 || label != "" {
+	if len(hits) > 0 || len(selRects) > 0 || label != "" || hasSquare || len(annots) > 0 {
+		markerCol := c.Theme().Accent.Alpha(0.85)
+		selStroke := c.Theme().Accent
 		e.DrawOver(func(p *ui.Painter, r ui.Rect) {
 			if debugOn {
 				debugSetRect(i, r) // scrolltest crops captures to this
+			}
+			// Existing annots (annotate.go) paint FIRST, under the live
+			// marks: hits, the square preview and the selection are the
+			// user's own current actions and read on top.
+			for _, a := range annots {
+				ar := ui.Rect{
+					X: r.X + a.rect[0], Y: r.Y + a.rect[1],
+					W: a.rect[2], H: a.rect[3],
+				}
+				switch {
+				case a.marker:
+					b := ui.Rect{X: ar.X - 4, Y: ar.Y - 4, W: 9, H: 9}
+					p.Fill(b, markerCol, 2)
+					if a.selected { // ring the badge, not the 0-size point
+						p.Stroke(ui.Rect{X: b.X - 2, Y: b.Y - 2, W: b.W + 4, H: b.H + 4}, selStroke, 3, 1.5)
+					}
+					continue
+				case a.fill:
+					p.Fill(ar, annotFill, 2)
+				case a.line == 1: // underline: the quad's bottom edge
+					p.Line(ar.X+1, ar.Y+ar.H-0.5, ar.X+ar.W-1, ar.Y+ar.H-0.5, 1, annotLine)
+				case a.line == 2: // strikeout: the quad's middle
+					p.Line(ar.X+1, ar.Y+ar.H/2, ar.X+ar.W-1, ar.Y+ar.H/2, 1, annotLine)
+				}
+				if a.selected {
+					p.Stroke(ar, selStroke, 2, 1.5)
+				}
 			}
 			for _, h := range hits {
 				col := otherCol
@@ -452,6 +502,16 @@ func buildPage(c *ui.Context, s *AppState, t *Tab, i int, box pageBox, g geom, r
 					W: h.rect[2],
 					H: h.rect[3],
 				}, col, 2)
+			}
+			// The square drag's preview: a thin accent outline in the
+			// same overlay pass (annotate.go).
+			if hasSquare {
+				p.Stroke(ui.Rect{
+					X: r.X + squareRect[0],
+					Y: r.Y + squareRect[1],
+					W: squareRect[2],
+					H: squareRect[3],
+				}, c.Theme().Accent, 2, 1)
 			}
 			// The selection paints above the hits: it is the user's own
 			// action, the thing under the pointer right now.
@@ -491,8 +551,10 @@ func snapScrollTo(y float32) {
 }
 
 // pageInput is the input handler of one page box (the innermost handler
-// where the pointer is — it shadows the scroll's while over a page). A
-// plain left press starts a text selection; the moves and release of a
+// where the pointer is — it shadows the scroll's while over a page). An
+// armed annotation tool takes the gesture first (annotate.go): the note
+// tool consumes the next click, the square tool the next drag. A plain
+// left press starts a text selection; the moves and release of a
 // captured drag keep arriving here in page-local DIPs. Zoom gestures
 // (InputZoom, Ctrl+wheel) forward to the viewer's handler with the
 // anchor re-based from page-local to viewport space, since viewerZoom
@@ -500,8 +562,36 @@ func snapScrollTo(y float32) {
 // still scrolls (the engine's own scroll handling runs when a handler
 // declines), plain clicks have nothing to do.
 func pageBoxInput(s *AppState, t *Tab, g geom, i int, ev ui.InputEvent) bool {
+	// Annotation gestures only for permissive tabs, and only while a
+	// tool is armed; unmatched events fall through to the reader's.
+	if t.CanAnnotate() && t.Annot.Tool != AnnotToolNone {
+		switch t.Annot.Tool {
+		case AnnotToolNote:
+			if ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0 {
+				s.PlaceNote(t, i, ev.X, ev.Y)
+				return true
+			}
+		case AnnotToolSquare:
+			switch {
+			case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
+				s.StartSquareDrag(t, i, ev.X, ev.Y)
+				return true
+			case ev.Kind == ui.InputPointerMove && t.Annot.SquareDrag && t.Annot.SquarePage == i:
+				s.ExtendSquareDrag(t, i, ev.X, ev.Y)
+				return true
+			case ev.Kind == ui.InputPointerUp && t.Annot.SquareDrag:
+				s.CommitSquareDrag(t)
+				return true
+			}
+		}
+	}
 	switch {
 	case ev.Kind == ui.InputPointerDown && ev.Button == 0 && ev.Mods == 0:
+		// The press always starts a selection (moving on marks it): a
+		// click that lands on an existing annot opens its context panel
+		// at release, in FinishSelection's click branch, so copy drags
+		// still start anywhere (annotate.go). No tool may be armed — an
+		// armed tool's gesture comes first above.
 		s.StartSelection(t, i, ev.X, ev.Y)
 		return true
 	case ev.Kind == ui.InputPointerMove && t.Sel.Dragging && t.Sel.Page == i:

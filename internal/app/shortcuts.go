@@ -96,14 +96,34 @@ func shortcuts(c *ui.Context, s *AppState) {
 	c.OnShortcut(0, ui.KeyF3, func() { s.StepSearch(s.Active(), +1) })
 	c.OnShortcut(ui.Shift, ui.KeyF3, func() { s.StepSearch(s.Active(), -1) })
 
-	// Escape closes the palette, else the search panel, else clears a
-	// text selection (one binding: a duplicate would shadow whichever
-	// registered first). While the palette's modal shows, window
-	// shortcuts wait and the modal closes on Escape by itself; this takes
-	// the frame where the flag flipped but the modal is not built yet.
-	// (When the panel's focused field takes Escape itself - to clear the
-	// query, or to close on an empty field - this binding does not fire:
-	// a focused element takes the key first.)
+	// Annotation tools (annotate.go, issue 3): Ctrl+Shift+H/U/K arm a
+	// markup mode the next finished text selection consumes. All three
+	// are clear of every other binding (checked against this file and
+	// the menus: Ctrl+K alone is the palette); they no-op for tabs that
+	// deny PermAnnotate.
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyH, armAnnotTool(s, AnnotToolHighlight))
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyU, armAnnotTool(s, AnnotToolUnderline))
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyK, armAnnotTool(s, AnnotToolStrikeout))
+
+	// Saving (save.go): Ctrl+S same-path, Ctrl+Shift+S Save-As through
+	// the native picker. Both are clear of every other binding.
+	c.OnShortcut(ui.Ctrl, ui.KeyS, func() {
+		if t := s.Active(); t != nil {
+			s.saveTab(t)
+		}
+	})
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyS, func() { s.saveActiveAs() })
+
+	// Escape closes the palette, else the search panel, else the go-to
+	// row, else disarms a pending annotation tool (and any of its
+	// in-flight gestures), else clears a text selection (one binding: a
+	// duplicate would shadow whichever registered first). While the
+	// palette's modal shows, window shortcuts wait and the modal closes
+	// on Escape by itself; this takes the frame where the flag flipped
+	// but the modal is not built yet. (When the panel's focused field
+	// takes Escape itself - to clear the query, or to close on an empty
+	// field - this binding does not fire: a focused element takes the
+	// key first.)
 	c.OnShortcut(0, ui.KeyEscape, func() {
 		switch {
 		case s.ShowPalette:
@@ -113,11 +133,28 @@ func shortcuts(c *ui.Context, s *AppState) {
 		case s.ShowGoTo:
 			s.ShowGoTo = false
 		default:
-			if t := s.Active(); t != nil && t.Sel.Active {
+			t := s.Active()
+			switch {
+			case t != nil && t.Annot.Tool != AnnotToolNone:
+				t.Annot.Tool = AnnotToolNone
+				t.Annot.SquareDrag = false // cancels a drag mid-gesture too
+			case t != nil && t.Sel.Active:
 				t.ClearSelection()
 			}
 		}
 	})
+}
+
+// armAnnotTool toggles the pending annotation tool on the active tab
+// when the tab's document permits annotating.
+func armAnnotTool(s *AppState, k AnnotToolKind) func() {
+	return func() {
+		t := s.Active()
+		if t == nil || t.Doc == nil || !t.CanAnnotate() {
+			return
+		}
+		s.ToggleAnnotTool(t, k)
+	}
 }
 
 func zoomIn(s *AppState) func() {

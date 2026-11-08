@@ -90,16 +90,45 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 		next.Children(func() { ui.Icon(c, chromeIcons.chevRight).FontSize(16) })
 		next.OnClick(nextPage(s))
 
+		// Section 3.5 — annotations (issue 3): visible only while the
+		// document permits them (Tab.CanAnnotate, the open-time
+		// permission snapshot from issue 2). The markup buttons arm a
+		// pending mode the next text selection consumes (annotate.go);
+		// the note takes the next click, the square the next drag.
+		if t.CanAnnotate() {
+			ui.Divider(c)
+			annotToolButton(c, s, t, AnnotToolHighlight,
+				"Highlight (Ctrl+Shift+H), then select text", chromeIcons.highlighter)
+			annotToolButton(c, s, t, AnnotToolUnderline,
+				"Underline (Ctrl+Shift+U), then select text", chromeIcons.underline)
+			annotToolButton(c, s, t, AnnotToolStrikeout,
+				"Strikeout (Ctrl+Shift+K), then select text", chromeIcons.strikeout)
+			ui.Divider(c)
+			annotToolButton(c, s, t, AnnotToolNote,
+				"Sticky note: click a page to place it", chromeIcons.note)
+			annotToolButton(c, s, t, AnnotToolSquare,
+				"Square: drag inside a page", chromeIcons.square)
+		}
+
 		// The spacer absorbs the leftover width, keeping the right section
 		// flush right instead of everything piling onto the left (ui.Spacer
 		// is ui.Toolbar's own mechanism for this).
 		ui.Spacer(c)
 
-		// Section 4 — flush right: search (it toggles the right-side
-		// results panel, searchpanel.go), print (the same PrintActive as
-		// Ctrl+P and the File menu) and the more menu. Share and comment
-		// are v1 non-goals (spec §2), and permanently disabled buttons
-		// are noise, not promises — they stay out.
+		// Section 4 — flush right: save (save.go; OFF for documents that
+		// cannot mutate — a denied-annotate doc can never become dirty),
+		// search (it toggles the right-side results panel,
+		// searchpanel.go), print (the same PrintActive as Ctrl+P and the
+		// File menu) and the more menu. Share and comment are v1
+		// non-goals (spec §2), and permanently disabled buttons are
+		// noise, not promises — they stay out.
+		if t.CanAnnotate() {
+			save := ui.Button(c, "").Label("Save").Tooltip("Save (Ctrl+S)").
+				Disabled(!t.Dirty)
+			save.Children(func() { ui.Icon(c, chromeIcons.save).FontSize(16) })
+			save.OnClick(func() { s.saveTab(t) })
+		}
+
 		search := ui.Button(c, "").Label("Search").Tooltip("Search (Ctrl+F)")
 		search.Children(func() { ui.Icon(c, chromeIcons.search).FontSize(16) })
 		search.OnClick(func() { s.ShowSearchPanel = !s.ShowSearchPanel })

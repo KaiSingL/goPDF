@@ -34,6 +34,8 @@ module; core work is testable on any platform, UI work is Windows-only.
    note, ink), selection-to-highlight through the existing selection
    geometry, right-click delete on existing annots, save prompts (full
    or incremental). Depends on issue 1 (+2 for password docs).
+   DEFERRED: ink annotations are out of scope for this branch (freehand
+   stroke capture UI is a follow-up of its own).
 4. **Presentation mode** — `feat/presentation-mode`. Fullscreen
    page-turner: one page at a time, dark chrome, click/arrows/keys to
    navigate, Esc exits, black background current page.

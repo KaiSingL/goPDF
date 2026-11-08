@@ -26,6 +26,9 @@ package pdf
 //
 //   - NumPages, PageSize, PageOrigin and Outline return post-edit values
 //     (annotation calls skip the re-sync: they change no page geometry).
+//     This covers EVERY Add*Async annotation call (AddHighlightAsync,
+//     AddUnderlineAsync, AddStrikeoutAsync, AddTextAsync, AddFreeTextAsync,
+//     AddSquareAsync) — markup creators share one lane and callback shape.
 //   - Any AnnotsAsync, RenderAsync, SelectionAsync or SearchQuadsAsync
 //     issued after that callback observes the edited document. Doc keeps
 //     no bitmap cache; RenderAsync always rasterizes live worker state.
@@ -205,6 +208,45 @@ func (d *Doc) AddHighlightAsync(page int, quads []fitz.Quad, color RGB, opacity 
 		return
 	}
 	d.addAnnot(page, fitz.AnnotHighlight, fitz.AnnotEdit{
+		QuadPoints: quads,
+		Color:      []float64{color.R, color.G, color.B},
+		Opacity:    &opacity,
+	}, fn)
+}
+
+// AddUnderlineAsync and AddStrikeoutAsync are PURE ADDITIONS the issue-3
+// annotation UI clearly needs: MuPDF creates each markup subtype through
+// its own pdf_annot type, and the facade until now wrapped only the
+// highlight one. Everything else mirrors AddHighlightAsync deliberately
+// (same validation, same lane, same callback shape) so the diff stays
+// purely additive; see the tests in edit_facade_markup_test.go.
+func (d *Doc) AddUnderlineAsync(page int, quads []fitz.Quad, color RGB, opacity float64, fn func(id int, err error)) {
+	d.addMarkupAsync(fitz.AnnotUnderline, page, quads, color, opacity, fn)
+}
+
+// AddStrikeoutAsync strikes text through over quads; see
+// AddUnderlineAsync for why this addition exists.
+func (d *Doc) AddStrikeoutAsync(page int, quads []fitz.Quad, color RGB, opacity float64, fn func(id int, err error)) {
+	d.addMarkupAsync(fitz.AnnotStrikeOut, page, quads, color, opacity, fn)
+}
+
+// addMarkupAsync is the shared body of the three markup creators: same
+// checks and the same AnnotEdit shape as AddHighlightAsync (quads carry
+// the geometry; a rect write would be rejected by MuPDF for markup
+// annots).
+func (d *Doc) addMarkupAsync(t fitz.AnnotType, page int, quads []fitz.Quad, color RGB, opacity float64, fn func(id int, err error)) {
+	if d.closed.Load() || fn == nil {
+		return
+	}
+	if len(quads) == 0 {
+		go fn(0, ErrBadQuads)
+		return
+	}
+	if badStyle(color, opacity) {
+		go fn(0, ErrBadParam)
+		return
+	}
+	d.addAnnot(page, t, fitz.AnnotEdit{
 		QuadPoints: quads,
 		Color:      []float64{color.R, color.G, color.B},
 		Opacity:    &opacity,

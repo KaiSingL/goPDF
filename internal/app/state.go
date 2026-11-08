@@ -121,6 +121,7 @@ type Tab struct {
 
 	Search  SearchState
 	Sel     SelectionState
+	Annot   AnnotState // annotation tools (annotate.go); UI thread only
 	Outline []pdf.OutlineNode
 
 	// Cache holds rendered page images; thread-safe (see pdf.PageCache).
@@ -128,6 +129,11 @@ type Tab struct {
 
 	// ReloadGen increments on Reload; the viewer re-renders when it changes.
 	ReloadGen int
+
+	// Dirty reports unsaved edits (an annotation was added or deleted
+	// since the last successful save). The tab label shows a bullet for
+	// it (save.go); plain reads never set it.
+	Dirty bool
 
 	index *pdf.Index // set on the UI thread by SetIndex after IndexAsync
 }
@@ -382,6 +388,13 @@ func (s *AppState) CloseTab(id string) {
 		return
 	}
 	t := s.Tabs[idx]
+	// A dirty tab closes WITHOUT saving: tabs.go has no confirm/cancel
+	// pattern to reuse, so the choice is a visible status notice over a
+	// silent loss or a new modal (save.go documents the choice).
+	if t.Dirty && t.Doc != nil {
+		s.StatusNotice = fmt.Sprintf("%s: closed with unsaved edits",
+			filepath.Base(t.Path))
+	}
 	s.Tabs = append(s.Tabs[:idx], s.Tabs[idx+1:]...)
 	if t.Doc != nil { // Doc-less tabs (failed open, tests) close without a panic
 		t.Doc.Close()
@@ -555,12 +568,15 @@ func (t *Tab) SetCurrentPage(p int) {
 }
 
 // Reload invalidates the tab's rendered images; the viewer re-renders the
-// visible pages when ReloadGen changes.
+// visible pages when ReloadGen changes. The annot overlay's listing
+// dies with it: a reload may change the annot set on disk, and every
+// mutation's refresh path rides this same bump.
 func (t *Tab) Reload() {
 	if t.Cache != nil {
 		t.Cache.Clear()
 	}
 	t.ReloadGen++
+	t.Annot.Listed = nil
 	notifyRelease()
 }
 
