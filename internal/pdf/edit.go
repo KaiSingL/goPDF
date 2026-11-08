@@ -52,11 +52,16 @@ package pdf
 // callback deadlocks the worker — queue bounded batches or hop to another
 // goroutine.)
 //
-// Save anchoring: after ANY successful save, the bytes at the target path
-// hold the current in-memory state (Save-As is atomic via temp+rename;
-// same-path saves rewrite in place through the doc's own handle).
-// Incremental saves stay valid only on Path(); the fork rejects them
-// elsewhere.
+// Save mechanics: a successful save guarantees the bytes at the target
+// hold the current in-memory state. Same-path FULL saves: sibling temp +
+// rename on POSIX (durable — the previous good bytes stay until the new
+// ones are complete; the doc keeps its open inode as its lazy-read
+// source), demoted to incremental on Windows (MuPDF 1.28 removes the
+// target before writing, and remove() of a file the doc holds open is a
+// sharing violation there; incremental appends coexist with it). An
+// incremental save appends an update section that MuPDF reconciles
+// against the doc's open-time bytes; the fork rejects incremental saves
+// on any path other than Path().
 //
 // Page-bitmap caches are the app's concern (PageCache lives outside Doc):
 // the app drops its own entries for the affected pages when a mutation
@@ -72,6 +77,8 @@ package pdf
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 
@@ -378,15 +385,18 @@ func (d *Doc) GraftPageAsync(srcPath string, srcPage, after int, fn func(err err
 	}, fn)
 }
 
-// SaveAsync writes the document on the worker. A full save to a path other
-// than Path() is atomic (sibling temp file, then rename; the fork's dance).
-// A full save to Path() rewrites that file in place through the handle the
-// fork's document already holds (pdf_save_document on doc->file): the
-// facade guarantees the file at Path() holds the CURRENT in-memory state
-// after a successful save; the layout mechanics (in-place rewrite vs
-// update section) are MuPDF's own, and anchors from before a full save
-// carry no app contract. An incremental save (opts.Incremental) must
-// target Path() (the fork rejects anything else).
+// SaveAsync writes the document on the worker. The mechanics split by
+// target (see savePath): a full save to a FOREIGN path is atomic through
+// the fork's own sibling-temp+rename dance; a full save to Path() on
+// POSIX gets the same dance from the facade (the previous good file
+// survives a failed save; the doc keeps its open inode for lazy reads)
+// while on Windows it demotes to an incremental save, because MuPDF
+// 1.28's in-place writer removes the path first — and remove() of a file
+// the document holds open is a sharing violation there. An incremental
+// save (opts.Incremental) must target Path() (the fork rejects anything
+// else) and appends an update section that MuPDF reconciles against the
+// doc's open-time bytes on the way in, so edits from earlier in the
+// session survive even a sideways save history.
 //
 // Saving mutates nothing in memory, so renders may legitimately overtake a
 // queued save on the hi lane (they show the same state either way) and no
@@ -408,8 +418,75 @@ func (d *Doc) SaveAsync(path string, opts fitz.SaveOptions, fn func(err error)) 
 		if d.closed.Load() {
 			return
 		}
-		fn(f.Save(path, opts))
+		fn(d.savePath(f, path, opts))
 	}
+}
+
+// savePath routes one save by target and platform (worker-only; see
+// SaveAsync's comment). Errors from unresolvable paths pass through to the
+// fork, which fails them at its own open/write.
+func (d *Doc) savePath(f *fitz.Document, path string, opts fitz.SaveOptions) error {
+	absOpen, oerr := filepath.Abs(d.path)
+	var absTarget string
+	var aerr error
+	if oerr == nil {
+		absTarget, aerr = filepath.Abs(path)
+	}
+	if oerr != nil || aerr != nil || absTarget != absOpen {
+		// A foreign target takes the fork's own atomic temp+rename dance;
+		// unresolvable paths error inside the fork. Incremental saves are
+		// rejected by the fork everywhere but Path().
+		return f.Save(path, opts)
+	}
+	if opts.Incremental {
+		// Appended update section; reconciliation against the doc's
+		// open-time bytes makes any earlier sideways save irrelevant.
+		// Windows-safe: fz fopen("rb+") coexists with the doc's read
+		// stream.
+		return f.Save(path, opts)
+	}
+	if runtime.GOOS == "windows" {
+		// MuPDF 1.28's full-save writer removes the target BEFORE writing,
+		// and remove() of a file the doc holds open is a sharing violation
+		// on Windows: the primary save flow would always fail. Demote to
+		// an incremental save instead: it appends reconciled updates and
+		// is the same platform the fork's own incremental path serves.
+		// Compaction is dropped on this branch; a real full save on
+		// Windows means Save-As (then reopening on app restart).
+		fullOpts := opts
+		fullOpts.Incremental = true
+		return f.Save(path, fullOpts)
+	}
+	// POSIX same-path full save: sibling temp + rename. Strictly more
+	// durable than MuPDF's own in-place write (which unlinks the live
+	// file BEFORE writing: a mid-write failure strands the previous good
+	// bytes), and the rename leaves the doc's open inode untouched, so
+	// lazy reads never lose their bytes and no anchor bookkeeping is
+	// needed.
+	return d.saveRenamedOver(f, absTarget, opts)
+}
+
+// saveRenamedOver saves to a sibling temp file of absTarget and renames it
+// over absTarget atomically (the fork's dance for a foreign target, applied
+// from the facade where MuPDF would remove+recreate the live file).
+func (d *Doc) saveRenamedOver(f *fitz.Document, absTarget string, opts fitz.SaveOptions) error {
+	tmp, err := os.CreateTemp(filepath.Dir(absTarget), ".gopdf-save-*.pdf")
+	if err != nil {
+		return fmt.Errorf("fitz: save: %w", err)
+	}
+	tmpName := tmp.Name()
+	tmp.Close()
+	os.Remove(tmpName) // MuPDF creates the file itself
+	err = f.Save(tmpName, opts)
+	if err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, absTarget); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("fitz: save: replace %s: %w", absTarget, err)
+	}
+	return nil
 }
 
 // Save writes the document synchronously: it queues on the same lo lane as
@@ -430,11 +507,11 @@ func (d *Doc) Save(path string, opts fitz.SaveOptions) error {
 		// On the worker (a callback context): the queued task would
 		// only run when this goroutine returns to the loop, so run it
 		// here against the same document.
-		return d.fit.Save(path, opts)
+		return d.savePath(d.fit, path, opts)
 	}
 	e := make(chan error, 1)
 	task := func(f *fitz.Document) {
-		e <- f.Save(path, opts)
+		e <- d.savePath(f, path, opts)
 	}
 	select {
 	case d.lo <- task:

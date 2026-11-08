@@ -142,11 +142,10 @@ func TestFacadeDeleteToEmpty(t *testing.T) {
 	}
 }
 
-// TestFacadeFullThenIncrementalSave: a FULL same-path save rewrites the
-// file in place through the document's own handle, so the doc's xref
-// anchors the fresh bytes and the incremental save that follows appends
-// cleanly into the REAL visible file (byte-prefix pinned). Reopened
-// ground truth: both annots survive.
+// TestFacadeFullThenIncrementalSave: a FULL same-path save (POSIX: durable
+// sibling temp + rename) and the incremental save that follows it — MuPDF
+// reconciles the target against the doc's open-time bytes on the way in,
+// so both annots are in the visible file on reopen.
 func TestFacadeFullThenIncrementalSave(t *testing.T) {
 	path := writeTextPDF(t, "both annots stay")
 	d := openTestDoc(t, path)
@@ -228,6 +227,21 @@ func TestFacadeSaveAsThenIncrementalAnchors(t *testing.T) {
 	if len(annots) != 2 {
 		t.Fatalf("annots after save-as-then-incremental: %d, want 2", len(annots))
 	}
+
+	// The Save-As target itself is also entirely its own one annot: it
+	// pins non-interference in both directions.
+	co, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	og := openGen(t, co)
+	outAnnots, err := og.Annots(0)
+	if err != nil {
+		t.Fatalf("reopen save-as target: %v", err)
+	}
+	if len(outAnnots) != 1 || outAnnots[0].Type != fitz.AnnotSquare {
+		t.Fatalf("save-as target annots: %+v, want the single first square", outAnnots)
+	}
 }
 
 // TestFacadeSyncSaveObservable: the synchronous Save returns the real error
@@ -288,5 +302,62 @@ func TestFacadeBadStyle(t *testing.T) {
 		func(id int, err error) { sCh <- err })
 	if err := recvErr(t, sCh, "negative color"); err != ErrBadParam {
 		t.Fatalf("negative color: %v, want ErrBadParam", err)
+	}
+}
+
+// TestFacadeSaveInlineFromCallback pins the inline-on-worker Save path: a
+// callback calling d.Save must detect callback context (loopGid == own
+// gid), run without deadlocking the worker, and persist to the file
+// (same-path included). A regression in currentGid parsing or the loopGid
+// store would otherwise reintroduce a deterministic one-call deadlock
+// with the suite still green.
+func TestFacadeSaveInlineFromCallback(t *testing.T) {
+	path := writeTextPDF(t, "inline save lands")
+	d := openTestDoc(t, path)
+
+	// From the test goroutine: not the worker. The store happens as the
+	// loop's first statement, a beat after Open returns, so poll briefly.
+	deadline := time.Now().Add(time.Second)
+	for {
+		if g := d.loopGid.Load(); g != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("loopGid never published")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if g := d.loopGid.Load(); g == 0 || g == currentGid() {
+		t.Fatalf("loopGid from test goroutine: %d, want a nonzero worker id not equal to ours", g)
+	}
+
+	idCh := make(chan idReply, 1)
+	d.AddSquareAsync(0, fitz.Rect{X0: 10, Y0: 10, X1: 50, Y1: 50}, RGB{G: 1}, 1,
+		func(id int, err error) {
+			// Inside the callback IS the worker goroutine: Save must
+			// detect it and run inline instead of waiting on itself.
+			if g := d.loopGid.Load(); g == 0 || g != currentGid() {
+				t.Errorf("loopGid inside callback: %d, want this goroutine's id", g)
+			}
+			if serr := d.Save(path, fitz.SaveOptions{}); serr != nil {
+				t.Errorf("inline save: %v", serr)
+			}
+			idCh <- idReply{id, err}
+		})
+	waitID(t, idCh, "square")
+
+	// The same-path save went through (it queued with nothing else
+	// ahead on lo — a hung worker would never deliver here at all).
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	og := openGen(t, raw)
+	annots, oerr := og.Annots(0)
+	if oerr != nil {
+		t.Fatalf("reopen annots: %v", oerr)
+	}
+	if len(annots) != 1 {
+		t.Fatalf("annots after inline save: %d, want 1", len(annots))
 	}
 }
