@@ -115,16 +115,51 @@ func TestPresentationEndsOnTabChangeAndClose(t *testing.T) {
 		t.Fatal("a headless entry left the fullscreen-undo flag set")
 	}
 
-	// Close the presenting tab: presentation ends before teardown.
+	// Close the presenting tab: presentation ends before teardown, and
+	// the flag dies with the removed tab (asserting it, because a
+	// different active tab makes presentingTab() nil regardless: only
+	// THIS assertion can catch a lost CloseTab guard headlessly).
 	s.SelectTabBy(tab.ID)
 	s.StartPresenting()
 	s.CloseTab(tab.ID)
+	if tab.Presenting {
+		t.Fatal("closing the presenting tab left its flag set")
+	}
 	if s.presentingTab() != nil {
 		t.Fatal("closing the presenting tab left presentation on")
 	}
 	if s.PresentFullscreen {
 		t.Fatal("closing the presenting tab left the fullscreen undo pending")
 	}
+}
+
+// TestPresentationNumberJumpClamps: digits past the last page clamp at
+// the last slide, and the digit buffer never grows past 4 digits.
+func TestPresentationNumberJumpClamps(t *testing.T) {
+	s := reproState(t, 5)
+	tab := s.Active()
+	s.StartPresenting()
+	tt := ui.NewTester(s.View, 1200, 800)
+
+	tt.Key(0, ui.Key9) // 9 > 5 pages: the jump clamps at the last slide
+	tt.Key(0, ui.KeyEnter)
+	if tab.CurPage != 4 {
+		t.Fatalf("out-of-range jump landed on page %d, want the clamped last slide", tab.CurPage)
+	}
+
+	tt.Key(0, ui.Key1)
+	tt.Key(0, ui.Key2)
+	tt.Key(0, ui.Key3)
+	tt.Key(0, ui.Key4)
+	tt.Key(0, ui.Key5) // a 5th digit must be dropped (buffer capped at 4)
+	if presentDigits != "1234" {
+		t.Fatalf("digit buffer: %q, want the capped 1234", presentDigits)
+	}
+	tt.Key(0, ui.KeyEnter)
+	if tab.CurPage != 1233 {
+		t.Fatalf("capped buffer jump landed on page %d, want the clamped last slide", tab.CurPage)
+	}
+	s.StopPresenting()
 }
 
 // TestPresentationGuardedWithoutDocument: no tab or a launcher tab

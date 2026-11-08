@@ -340,7 +340,11 @@ func (s *AppState) openTab(path, password string) (*Tab, error) {
 		t.Zoom = clampZoom(s.Settings.DefaultZoom)
 	}
 	s.Tabs = append(s.Tabs, t)
-	s.ActiveTab = len(s.Tabs) - 1
+	// Activate through the guarded setter: it ends presentation when a
+	// presenting tab is active, which the direct write would skip (an
+	// external open while presenting — OnFileDrop, OnOpenFile,
+	// OnSecondInstance — reaches exactly here on the UI thread).
+	s.SelectTabBy(t.ID)
 	s.StatusNotice = "" // a fresh open clears the last failure notice
 	s.addRecent(t.Path)
 	return t, nil

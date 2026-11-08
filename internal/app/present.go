@@ -88,8 +88,13 @@ func (s *AppState) StartPresenting() {
 		return
 	}
 	// Overlays the reader builds must not linger under presentation
-	// (presentView builds none of them): clear the flags now or they
-	// would all resurface the moment presentation ends.
+	// (presentView builds none of them): the raised panel flags clear
+	// here so the reveals cannot resurface on exit. App-drawn modals that
+	// belong to a tab (note editor, annot context panel, the password
+	// prompt's pending state) intentionally persist: they surface again
+	// when the reader returns, the state was not lost. External opens
+	// while presenting end presentation first (openTab's guarded
+	// activation), so their prompts always have chrome to show in.
 	s.ShowPalette = false
 	s.ShowSearchPanel = false
 	s.ShowGoTo = false
@@ -224,7 +229,7 @@ func presentView(c *ui.Context, s *AppState) {
 		HandleInput(func(ev ui.InputEvent) bool { return presentInput(s, vw, ev) })
 	e.Children(func() {
 		ui.Column(c).Fill().Children(func() {
-			ui.Box(c).Grow(1) // above the slide
+			ui.Box(c).Grow(1) // above the slide (letterbox top: centered)
 			ui.Row(c).FillWidth().Justify(ui.Center).Children(func() {
 				if bm != nil {
 					ui.Image(c, bm).Size(w, h).Fit(ui.FillBox)
@@ -232,6 +237,7 @@ func presentView(c *ui.Context, s *AppState) {
 				}
 				ui.Textf(c, "Page %d", t.CurPage+1).TextColor(presentMuted)
 			})
+			ui.Box(c).Grow(1) // below the slide (letterbox bottom: centered)
 			// The HUD slice: the typed slide number, right-aligned,
 			// same dark as the surround when nothing is typed.
 			ui.Row(c).FillWidth().Height(presentHud).Justify(ui.End).
