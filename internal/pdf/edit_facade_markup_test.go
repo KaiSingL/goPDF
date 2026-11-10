@@ -53,7 +53,7 @@ func TestFacadeUnderlineStrikeoutRoundTrip(t *testing.T) {
 	for _, a := range annots {
 		byID[a.ID] = a
 	}
-	if u, ok := byID[uID]; !ok || u.Type != fitz.AnnotUnderline || len(u.Quads) != 1 || u.Text != "" {
+	if u, ok := byID[uID]; !ok || u.Type != fitz.AnnotUnderline || len(u.Quads) != 1 || u.Contents != "" {
 		t.Fatalf("underline mapping: present %v %+v", ok, byID[uID])
 	}
 	if s, ok := byID[sID]; !ok || s.Type != fitz.AnnotStrikeOut || len(s.Quads) != 1 {

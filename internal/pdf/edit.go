@@ -20,15 +20,16 @@ package pdf
 //
 // Every mutating callback fires only after the mutation itself AND the
 // derived-state re-sync finished. Therefore, once AddHighlightAsync,
-// AddTextAsync, AddFreeTextAsync, AddSquareAsync, DeleteAnnotAsync,
-// InsertBlankPageAsync, RotatePageAsync, DeletePageAsync or GraftPageAsync
-// reports nil error:
+// AddTextAsync, AddFreeTextAsync, AddSquareAsync, CreateAnnotAsync,
+// DeleteAnnotAsync, InsertBlankPageAsync, RotatePageAsync, DeletePageAsync
+// or GraftPageAsync reports nil error:
 //
 //   - NumPages, PageSize, PageOrigin and Outline return post-edit values
 //     (annotation calls skip the re-sync: they change no page geometry).
-//     This covers EVERY Add*Async annotation call (AddHighlightAsync,
+//     This covers EVERY annotation call (AddHighlightAsync,
 //     AddUnderlineAsync, AddStrikeoutAsync, AddTextAsync, AddFreeTextAsync,
-//     AddSquareAsync) — markup creators share one lane and callback shape.
+//     AddSquareAsync, CreateAnnotAsync) — annotation creators share one
+//     lane and callback shape.
 //   - Any AnnotsAsync, RenderAsync, SelectionAsync or SearchQuadsAsync
 //     issued after that callback observes the edited document. Doc keeps
 //     no bitmap cache; RenderAsync always rasterizes live worker state.
@@ -120,11 +121,54 @@ type PageAnnot struct {
 	ID   int
 	Type fitz.AnnotType
 	Rect fitz.Rect // page space, points, top-left origin
-	// Quads carries the markup geometry (highlight); empty for other types.
+	// Quads carries the markup geometry (highlight, underline, squiggly,
+	// strikeout); empty for other types.
 	Quads []fitz.Quad
-	// Text is the body of sticky notes (AnnotText) and FreeText annots,
-	// the two kinds this facade creates with text; empty otherwise.
-	Text string
+	// Contents is the annotation's text (a note's body, a markup's alt
+	// text): the fork's /Contents verbatim, empty when absent.
+	Contents string
+	// Author is the /T entry, empty when absent.
+	Author string
+	// Color is the stroke color, most often RGB (3 components 0..1);
+	// nil when the annot carries none.
+	Color []float64
+	// Opacity is /CA, 0..1; 1 when absent.
+	Opacity float64
+}
+
+// RestoreEdit builds the CreateAnnotAsync edit that re-creates this
+// annotation verbatim: the inverse half of DeleteAnnotAsync an undo
+// stack needs. The shape mirrors how the typed creators write each kind
+// — markup geometry through quads (a rect write would be rejected by
+// MuPDF), rect-based kinds through the rect — with color and opacity
+// forwarded only where they were present (nil Color means absent, and
+// opacity 1 is the absent default, so neither writes a value the
+// original never carried). Types whose geometry AnnotEdit cannot
+// express (ink paths, stamps) restore as their rect and colors alone:
+// a documented degradation, they are not creatable through this facade
+// any other way either.
+func (a PageAnnot) RestoreEdit() fitz.AnnotEdit {
+	var e fitz.AnnotEdit
+	if len(a.Quads) > 0 {
+		e.QuadPoints = a.Quads
+	} else if a.Rect != (fitz.Rect{}) {
+		r := a.Rect
+		e.Rect = &r
+	}
+	if a.Color != nil {
+		e.Color = a.Color
+	}
+	if a.Opacity != 1 {
+		o := a.Opacity
+		e.Opacity = &o
+	}
+	if a.Contents != "" {
+		e.Contents, e.SetContents = a.Contents, true
+	}
+	if a.Author != "" {
+		e.Author, e.SetAuthor = a.Author, true
+	}
+	return e
 }
 
 // AnnotsAsync lists one page's annotations on the hi lane (overlay painting
@@ -149,11 +193,11 @@ func (d *Doc) AnnotsAsync(page int, fn func([]PageAnnot, error)) {
 		}
 		out := make([]PageAnnot, len(annots))
 		for i, a := range annots {
-			pa := PageAnnot{ID: int(a.ID), Type: a.Type, Rect: a.Rect, Quads: a.QuadPoints}
-			if a.Type == fitz.AnnotText || a.Type == fitz.AnnotFreeText {
-				pa.Text = a.Contents
+			out[i] = PageAnnot{
+				ID: int(a.ID), Type: a.Type, Rect: a.Rect, Quads: a.QuadPoints,
+				Contents: a.Contents, Author: a.Author,
+				Color: a.Color, Opacity: a.Opacity,
 			}
-			out[i] = pa
 		}
 		fn(out, nil)
 	}
@@ -190,6 +234,17 @@ func badStyle(color RGB, opacity float64) bool {
 		}
 	}
 	return false
+}
+
+// badEditStyle is badStyle over an AnnotEdit's optional halves: nil slices
+// and pointers mean absent, so only the present values are checked.
+func badEditStyle(e fitz.AnnotEdit) bool {
+	for _, c := range e.Color {
+		if !(c >= 0 && c <= 1) {
+			return true
+		}
+	}
+	return e.Opacity != nil && !(*e.Opacity >= 0 && *e.Opacity <= 1)
 }
 
 // AddHighlightAsync highlights text over quads (page space, points,
@@ -251,6 +306,32 @@ func (d *Doc) addMarkupAsync(t fitz.AnnotType, page int, quads []fitz.Quad, colo
 		Color:      []float64{color.R, color.G, color.B},
 		Opacity:    &opacity,
 	}, fn)
+}
+
+// CreateAnnotAsync is the generic creator the typed Add*Async calls wrap:
+// it creates one annotation of type t on page from e (nil pointers and
+// slices mean absent) and delivers the new annotation's ID. User gestures
+// keep going through the typed creators; this one serves exact
+// restoration, where an undo stack re-creates a snapshot verbatim,
+// subtypes the typed creators do not cover included (squiggly). Markup
+// types need at least one quad (ErrBadQuads); color components and
+// opacity must lie in 0..1 (ErrBadParam).
+func (d *Doc) CreateAnnotAsync(page int, t fitz.AnnotType, e fitz.AnnotEdit, fn func(id int, err error)) {
+	if d.closed.Load() || fn == nil {
+		return
+	}
+	switch t {
+	case fitz.AnnotHighlight, fitz.AnnotUnderline, fitz.AnnotSquiggly, fitz.AnnotStrikeOut:
+		if len(e.QuadPoints) == 0 {
+			go fn(0, ErrBadQuads)
+			return
+		}
+	}
+	if badEditStyle(e) {
+		go fn(0, ErrBadParam)
+		return
+	}
+	d.addAnnot(page, t, e, fn)
 }
 
 // AddTextAsync adds a sticky note anchored at rect (an icon-sized spot in

@@ -222,8 +222,8 @@ func TestNotePlacementFlow(t *testing.T) {
 	if len(annots) != 1 || annots[0].Type.String() != "Text" {
 		t.Fatalf("created annot not a sticky note: %+v", annots)
 	}
-	if annots[0].Text != "a note from the test" {
-		t.Fatalf("note body: %q", annots[0].Text)
+	if annots[0].Contents != "a note from the test" {
+		t.Fatalf("note body: %q", annots[0].Contents)
 	}
 	// The anchor sits at the click point: within the 40x36 rect's reach.
 	r := annots[0].Rect
