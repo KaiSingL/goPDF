@@ -631,7 +631,11 @@ func (s *AppState) deleteSelectedAnnot(t *Tab) {
 	}
 	t.Annot.mutating = true
 	if snap.ID == 0 {
-		t.Doc.DeleteAnnotAsync(page, id, s.annotDone(t, "delete annotation"))
+		// Not in the listing (stale selection): delete anyway. Still a
+		// fresh user mutation, so the redo stack clears; there is just
+		// no snapshot to record an undo entry from.
+		t.Doc.DeleteAnnotAsync(page, id, s.annotDoneEx(t, "delete annotation",
+			func(cur *Tab) { cur.Annot.Redo = nil }))
 		return
 	}
 	t.Doc.DeleteAnnotAsync(page, id, s.annotDoneEx(t, "delete annotation",

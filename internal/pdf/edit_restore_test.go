@@ -187,3 +187,68 @@ func waitIDErr(t *testing.T, ch <-chan idReply, what string) error {
 		return nil
 	}
 }
+
+// TestFacadeRestoreSquigglyAndFreeText: the kinds the typed creators do
+// not cover must restore too, since the overlay lets the user delete
+// them. A squiggly is created generically and restored exactly through
+// its quads; a FreeText restores with its contents (its border width is
+// not carried, the documented degradation).
+func TestFacadeRestoreSquigglyAndFreeText(t *testing.T) {
+	path := writeTestPDF(t, genPDFBytes([]string{textContent("restore these")}, nil, nil))
+	d := openTestDoc(t, path)
+
+	quads := []fitz.Quad{{
+		UL: fitz.Point{X: 72, Y: 100}, UR: fitz.Point{X: 200, Y: 100},
+		LL: fitz.Point{X: 72, Y: 122}, LR: fitz.Point{X: 200, Y: 122},
+	}}
+	qCh := make(chan idReply, 1)
+	d.CreateAnnotAsync(0, fitz.AnnotSquiggly, fitz.AnnotEdit{
+		QuadPoints: quads, Color: []float64{0, 0.5, 1},
+	}, func(id int, err error) { qCh <- idReply{id, err} })
+	waitID(t, qCh, "create squiggly")
+
+	fCh := make(chan idReply, 1)
+	d.AddFreeTextAsync(0, fitz.Rect{X0: 150, Y0: 500, X1: 350, Y1: 545}, "free body restored",
+		func(id int, err error) { fCh <- idReply{id, err} })
+	waitID(t, fCh, "add freetext")
+
+	aCh := make(chan annotsReply, 1)
+	d.AnnotsAsync(0, func(as []PageAnnot, err error) { aCh <- annotsReply{as, err} })
+	annots := waitAnnots(t, aCh, "list annots")
+	if len(annots) != 2 {
+		t.Fatalf("annots: %d, want 2", len(annots))
+	}
+	var qSnap, fSnap PageAnnot
+	for _, a := range annots {
+		switch a.Type {
+		case fitz.AnnotSquiggly:
+			qSnap = a
+		case fitz.AnnotFreeText:
+			fSnap = a
+		}
+	}
+	if qSnap.ID == 0 || fSnap.ID == 0 {
+		t.Fatalf("listing missed a kind: %+v", annots)
+	}
+
+	sq := restoreOnce(t, d, 0, qSnap)
+	if sq.Type != fitz.AnnotSquiggly || len(sq.QuadPoints) != 1 {
+		t.Fatalf("restored squiggly: %+v", sq)
+	}
+	q := sq.QuadPoints[0]
+	if !near(q.UL.X, 72) || !near(q.UL.Y, 100) || !near(q.LR.X, 200) || !near(q.LR.Y, 122) {
+		t.Fatalf("restored squiggly quad drifted: %+v", q)
+	}
+	if len(sq.Color) != 3 || !near(sq.Color[1], 0.5) || !near(sq.Color[2], 1) {
+		t.Fatalf("restored squiggly color: %v, want [0 0.5 1]", sq.Color)
+	}
+
+	ft := restoreOnce(t, d, 0, fSnap)
+	if ft.Type != fitz.AnnotFreeText || ft.Contents != "free body restored" {
+		t.Fatalf("restored freetext: %+v", ft)
+	}
+	r := ft.Rect
+	if !near(r.X0, 150) || !near(r.Y0, 500) || !near(r.X1, 350) || !near(r.Y1, 545) {
+		t.Fatalf("restored freetext rect drifted: %v", r)
+	}
+}

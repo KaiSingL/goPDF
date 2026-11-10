@@ -17,10 +17,16 @@
 // the entry with the shared StatusNotice error routing.
 //
 // A fresh USER mutation clears the redo stack (the standard rule);
-// undo/redo-driven applies never do. All applies and user mutations set
-// the single-flight AnnotState.mutating flag, cleared in every
-// annotDoneEx hop, so a second undo cannot interleave with an apply
-// whose record has not landed.
+// undo/redo-driven applies never do. Applies hold the single-flight
+// AnnotState.mutating flag from issue to callback (cleared in every
+// annotDoneEx hop), so undo/redo cannot interleave with each other. A
+// user mutation also sets the flag but does not CHECK it, and a
+// sibling's callback may clear it while another mutation is still in
+// flight; that is deliberate (a gesture is never dropped) and safe:
+// entries fully describe their own op and the worker's FIFO order is
+// the only serialization, so the end state always matches a serial
+// user. The flag keeps the buttons honest mid-apply; it is not a
+// correctness mechanism.
 //
 // Scope and limits, on purpose: annotations only (page organization has
 // no UI to undo), one tab's stacks die with it, and the Dirty flag stays
