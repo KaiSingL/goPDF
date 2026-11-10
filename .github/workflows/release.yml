@@ -1,0 +1,74 @@
+# Release: a tag push on master (v*) packages the app and opens a DRAFT
+# GitHub release with the exe and the Setup installer. Drafts, because a
+# bad artifact should not ship before a human has looked at it: the
+# publish click is the release. There is no release branch (ROADMAP's
+# working rules): the tag is the release point, and it must equal
+# mygo.json's version, which names the Setup exe, or the build fails.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: package and draft release (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/gopdf-toolchain
+
+      - name: Verify the tag matches mygo.json
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME.TrimStart('v')
+          $meta = Get-Content mygo.json -Raw | ConvertFrom-Json
+          if ($tag -ne $meta.version) {
+            Write-Host "::error::tag $($env:GITHUB_REF_NAME) does not match mygo.json version $($meta.version): bump mygo.json in the tagged commit (or re-tag)"
+            exit 1
+          }
+          "version=$tag" | Add-Content $env:GITHUB_ENV
+
+      - name: Package
+        run: go tool mygo build
+
+      - name: Verify artifacts exist
+        shell: pwsh
+        run: |
+          $wanted = @(
+            'build/windows-amd64/GoPDF.exe',
+            "build/windows-amd64/GoPDF Setup $($env:version) amd64.exe"
+          )
+          foreach ($f in $wanted) {
+            if (-not (Test-Path $f)) {
+              Write-Host "::error::packaging did not produce $f"
+              exit 1
+            }
+          }
+
+      - name: Draft the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Idempotent on re-runs: a create that succeeded before an
+          # upload flake must not fail on already_exists next time.
+          gh release view "$env:GITHUB_REF_NAME" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:GITHUB_REF_NAME" --draft --title "GoPDF $($env:version)" --generate-notes
+          }
+          gh release upload "$env:GITHUB_REF_NAME" `
+            'build/windows-amd64/GoPDF.exe' `
+            "build/windows-amd64/GoPDF Setup $($env:version) amd64.exe"
+          Write-Host "Draft release ready: publish it from the Releases page."

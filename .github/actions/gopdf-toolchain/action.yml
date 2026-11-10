@@ -1,0 +1,35 @@
+# The GoPDF build needs CGO (the vendored go-fitz fork's document
+# surface is cgo-only, see AGENTS.md), which on Windows means a
+# mingw-w64 gcc. dev.ps1 wires the local toolchain; this composite
+# action is its CI equivalent: probe the usual preinstalled locations
+# on the runner images (PATH, MSYS2, chocolatey's mingw), install via
+# chocolatey if none is present, and publish PATH/CC/CGO_ENABLED for
+# the remaining steps.
+name: 'GoPDF Windows toolchain'
+description: 'Wires CGO_ENABLED=1 and a mingw-w64 gcc for the cgo build'
+runs:
+  using: composite
+  steps:
+    - name: Locate mingw-w64 gcc
+      shell: pwsh
+      run: |
+        $candidates = @(
+          (Get-Command gcc -ErrorAction SilentlyContinue).Source,
+          'C:\msys64\mingw64\bin\gcc.exe',
+          'C:\mingw64\bin\gcc.exe',
+          'C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\gcc.exe'
+        ) | Where-Object { $_ -and (Test-Path $_) }
+        if (-not $candidates) {
+          Write-Host 'No mingw-w64 found on the runner: installing via chocolatey'
+          choco install mingw --yes --no-progress
+          $candidates = @('C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin\gcc.exe')
+        }
+        $gcc = $candidates | Select-Object -First 1
+        if (-not (Test-Path $gcc)) {
+          Write-Host "::error::mingw-w64 gcc not available even after install"
+          exit 1
+        }
+        Add-Content $env:GITHUB_PATH (Split-Path $gcc)
+        "CC=$gcc" | Add-Content $env:GITHUB_ENV
+        'CGO_ENABLED=1' | Add-Content $env:GITHUB_ENV
+        Write-Host "Using $($(& $gcc --version | Select-Object -First 1))"

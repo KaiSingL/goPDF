@@ -86,5 +86,8 @@ still run the rest of the suite.
 - Conventional commits, detailed bodies; no em dashes in user-facing strings
   or commit messages.
 - Pushing is the user's task (gh unauthed on the dev machine).
+- Releases: bump mygo.json, merge to master, tag `v<version>` and push
+  the tag; CI packages and opens a DRAFT release (ROADMAP's working
+  rules). Publishing the draft is the user's click.
 - Deferred (documented in ROADMAP.md): ink annotations, smart dark-mode page
   inversion, auto-updater.
