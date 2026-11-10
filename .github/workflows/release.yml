@@ -35,7 +35,7 @@ jobs:
           $tag = $env:GITHUB_REF_NAME.TrimStart('v')
           $meta = Get-Content mygo.json -Raw | ConvertFrom-Json
           if ($tag -ne $meta.version) {
-            Write-Error "::error::tag $($env:GITHUB_REF_NAME) does not match mygo.json version $($meta.version): bump mygo.json in the tagged commit (or re-tag)"
+            Write-Host "::error::tag $($env:GITHUB_REF_NAME) does not match mygo.json version $($meta.version): bump mygo.json in the tagged commit (or re-tag)"
             exit 1
           }
           "version=$tag" | Add-Content $env:GITHUB_ENV
@@ -52,7 +52,7 @@ jobs:
           )
           foreach ($f in $wanted) {
             if (-not (Test-Path $f)) {
-              Write-Error "::error::packaging did not produce $f"
+              Write-Host "::error::packaging did not produce $f"
               exit 1
             }
           }
@@ -62,7 +62,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" --draft --title "GoPDF $($env:version)" --generate-notes
+          # Idempotent on re-runs: a create that succeeded before an
+          # upload flake must not fail on already_exists next time.
+          gh release view "$env:GITHUB_REF_NAME" 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:GITHUB_REF_NAME" --draft --title "GoPDF $($env:version)" --generate-notes
+          }
           gh release upload "$env:GITHUB_REF_NAME" `
             'build/windows-amd64/GoPDF.exe' `
             "build/windows-amd64/GoPDF Setup $($env:version) amd64.exe"

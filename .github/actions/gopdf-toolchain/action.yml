@@ -26,7 +26,7 @@ runs:
         }
         $gcc = $candidates | Select-Object -First 1
         if (-not (Test-Path $gcc)) {
-          Write-Error "::error::mingw-w64 gcc not available even after install"
+          Write-Host "::error::mingw-w64 gcc not available even after install"
           exit 1
         }
         Add-Content $env:GITHUB_PATH (Split-Path $gcc)
