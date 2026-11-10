@@ -72,6 +72,24 @@ func (k AnnotToolKind) Markup() bool {
 	return k == AnnotToolHighlight || k == AnnotToolUnderline || k == AnnotToolStrikeout
 }
 
+// fitzType is the facade's annotation subtype of the kind (the undo
+// snapshot's Type, and what a restore re-creates).
+func (k AnnotToolKind) fitzType() fitz.AnnotType {
+	switch k {
+	case AnnotToolHighlight:
+		return fitz.AnnotHighlight
+	case AnnotToolUnderline:
+		return fitz.AnnotUnderline
+	case AnnotToolStrikeout:
+		return fitz.AnnotStrikeOut
+	case AnnotToolNote:
+		return fitz.AnnotText
+	case AnnotToolSquare:
+		return fitz.AnnotSquare
+	}
+	return fitz.AnnotUnknown
+}
+
 // annotToolLabel is the human name the toolbar, palette and notices use.
 func annotToolLabel(k AnnotToolKind) string {
 	switch k {
@@ -146,6 +164,12 @@ type AnnotState struct {
 	SelID   int
 	SelPage int
 	SelType string
+
+	// Undo/redo (undo.go, issue 6): the per-tab annotation stacks, and
+	// the single-flight flag that holds undo/redo off while a mutation
+	// is between issue and callback. A fresh user mutation clears Redo.
+	Undo, Redo []undoEntry
+	mutating   bool
 }
 
 // ToggleAnnotTool arms k as the tab's pending tool, or disarms it when k
@@ -169,12 +193,22 @@ func (s *AppState) ToggleAnnotTool(t *Tab, k AnnotToolKind) {
 // render draws annotation appearances, so the edit shows through a fresh
 // render, ordered after the mutation by the facade's freshness contract.
 func (s *AppState) annotDone(t *Tab, what string) func(error) {
+	return s.annotDoneEx(t, what, nil)
+}
+
+// annotDoneEx is annotDone with a success hook: ok runs inside the same
+// UI hop after the shared finish (dirty, reload) — the undo engine
+// records its stack moves there, the one place where the worker's reply
+// has landed (and, for creators, the new annot's ID exists). Every hop
+// also releases the single-flight mutating flag, success or failure.
+func (s *AppState) annotDoneEx(t *Tab, what string, ok func(cur *Tab)) func(error) {
 	return func(err error) { // doc worker goroutine
 		updateFromWorker(func() { // hop, never inline
 			cur := s.tabByID(t.ID)
 			if cur == nil || cur.Doc == nil {
 				return // stale: tab closed while the edit was in flight
 			}
+			defer func() { cur.Annot.mutating = false }()
 			if err != nil {
 				// ErrBadPage/ErrBadQuads/ErrBadParam cannot arise from
 				// validated UI geometry, but they pass through here
@@ -185,6 +219,9 @@ func (s *AppState) annotDone(t *Tab, what string) func(error) {
 			}
 			cur.Dirty = true // unsaved edits: the tab label's bullet (save.go)
 			cur.Reload()
+			if ok != nil {
+				ok(cur)
+			}
 			if window != nil {
 				window.Invalidate()
 			}
@@ -258,8 +295,10 @@ func (s *AppState) commitNote(t *Tab) {
 	}
 	page := t.Annot.NotePage
 	rect := t.noteRect()
-	done := func(id int, err error) { s.annotDone(t, annotToolLabel(AnnotToolNote))(err) }
-	t.Doc.AddTextAsync(page, rect, note, done)
+	snap := pdf.PageAnnot{Type: fitz.AnnotText, Rect: rect, Contents: note}
+	t.Annot.mutating = true
+	t.Doc.AddTextAsync(page, rect, note,
+		s.recordCreate(t, annotToolLabel(AnnotToolNote), page, snap))
 }
 
 // The note editor's per-tab draft lives on the tab (Tab.Annot.NoteDraft,
@@ -380,8 +419,14 @@ func (s *AppState) CommitSquareDrag(t *Tab) {
 	t.Annot.Tool = AnnotToolNone
 	page := t.Annot.SquarePage
 	rect := fitz.Rect{X0: x0, Y0: y0, X1: x1, Y1: y1}
-	done := func(id int, err error) { s.annotDone(t, annotToolLabel(AnnotToolSquare))(err) }
-	t.Doc.AddSquareAsync(page, rect, squareColor, 1, done)
+	snap := pdf.PageAnnot{
+		Type: fitz.AnnotSquare, Rect: rect,
+		Color:   []float64{squareColor.R, squareColor.G, squareColor.B},
+		Opacity: 1,
+	}
+	t.Annot.mutating = true
+	t.Doc.AddSquareAsync(page, rect, squareColor, 1,
+		s.recordCreate(t, annotToolLabel(AnnotToolSquare), page, snap))
 }
 
 // ---- existing-annot overlay --------------------------------------------
@@ -568,13 +613,33 @@ func (s *AppState) selectAnnot(t *Tab, page int, a *pdf.PageAnnot) {
 // deleteSelectedAnnot removes the context panel's annot through the
 // facade and closes the panel; the shared annotDone hop refreshes the
 // overlay (Reload clears the listing; the next build re-requests it).
+// The annot is snapshotted from the listing BEFORE the delete, so the
+// undo entry can re-create it verbatim (undo.go); a selection missing
+// from the listing deletes without an undo record.
 func (s *AppState) deleteSelectedAnnot(t *Tab) {
 	if t == nil || t.Doc == nil || !t.Annot.SelOpen || t.Annot.SelID == 0 {
 		return
 	}
 	t.Annot.SelOpen = false
 	page, id := t.Annot.SelPage, t.Annot.SelID
-	t.Doc.DeleteAnnotAsync(page, id, s.annotDone(t, "delete annotation"))
+	var snap pdf.PageAnnot
+	for _, a := range t.Annot.Listed[page] {
+		if a.ID == id {
+			snap = a
+			break
+		}
+	}
+	t.Annot.mutating = true
+	if snap.ID == 0 {
+		t.Doc.DeleteAnnotAsync(page, id, s.annotDone(t, "delete annotation"))
+		return
+	}
+	t.Doc.DeleteAnnotAsync(page, id, s.annotDoneEx(t, "delete annotation",
+		func(cur *Tab) {
+			cur.Annot.Undo = append(cur.Annot.Undo,
+				undoEntry{op: opDeleted, page: page, id: id, snap: snap})
+			cur.Annot.Redo = nil
+		}))
 }
 
 // annotContextOverlay renders the click-on-annot context panel: the type
@@ -655,13 +720,30 @@ func (s *AppState) maybeCreateMarkup(t *Tab) {
 	quads := hitQuads(t.Sel.Quads)
 	t.ClearSelection()
 
-	done := func(id int, err error) { s.annotDone(t, annotToolLabel(k))(err) }
+	// The undo snapshot mirrors what the creator writes: quads carry the
+	// geometry, color and opacity the style constants picked.
+	rgb := func(c pdf.RGB) []float64 { return []float64{c.R, c.G, c.B} }
+	snap := pdf.PageAnnot{Type: k.fitzType(), Quads: quads}
+	var color pdf.RGB
+	var opacity float64
 	switch k {
 	case AnnotToolHighlight:
-		t.Doc.AddHighlightAsync(page, quads, highlightColor, highlightOpacity, done)
+		color, opacity = highlightColor, highlightOpacity
+	case AnnotToolUnderline, AnnotToolStrikeout:
+		color, opacity = markupBlack, 1
+	}
+	snap.Color, snap.Opacity = rgb(color), opacity
+
+	t.Annot.mutating = true
+	switch k {
+	case AnnotToolHighlight:
+		t.Doc.AddHighlightAsync(page, quads, highlightColor, highlightOpacity,
+			s.recordCreate(t, annotToolLabel(k), page, snap))
 	case AnnotToolUnderline:
-		t.Doc.AddUnderlineAsync(page, quads, markupBlack, 1, done)
+		t.Doc.AddUnderlineAsync(page, quads, markupBlack, 1,
+			s.recordCreate(t, annotToolLabel(k), page, snap))
 	case AnnotToolStrikeout:
-		t.Doc.AddStrikeoutAsync(page, quads, markupBlack, 1, done)
+		t.Doc.AddStrikeoutAsync(page, quads, markupBlack, 1,
+			s.recordCreate(t, annotToolLabel(k), page, snap))
 	}
 }

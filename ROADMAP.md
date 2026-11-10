@@ -51,6 +51,16 @@ module; core work is testable on any platform, UI work is Windows-only.
    glyphs. Investigate runtime fallback (system font loading via MuPDF)
    vs rebuilding bundled libs with the CJK font pack; document the
    chosen route in GOPDF_PATCHES.md.
+6. **Annotation undo/redo** — `feat/undo-redo`. Per-tab inverse-op
+   stacks over the annotation mutations (annotate.go's creators and
+   delete): undo of a create deletes, undo of a delete re-creates the
+   exact snapshot through a new wrap-only facade surface
+   (CreateAnnotAsync + PageAnnot.RestoreEdit — the fork's generic
+   CreateAnnot exposed, no fork changes). Toolbar undo/redo buttons
+   after the annotation tools, Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, palette
+   commands. Known limits (on purpose): annotations only, Dirty stays
+   set after undoing to the opened state (object renumbering), ink and
+   stamp geometry restores as rect+colors alone.
 
 Deferred (documented, not scheduled): smart dark-mode page inversion,
 auto-updater, installer polish across more locales.

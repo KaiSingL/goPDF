@@ -119,6 +119,16 @@ func shortcuts(c *ui.Context, s *AppState) {
 	})
 	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyS, func() { s.saveActiveAs() })
 
+	// Undo/redo (undo.go, issue 6): annotation edits only — the entry
+	// points no-op without the annotate permission, a drainable stack or
+	// while a mutation is mid-flight. Ctrl+Shift+Z is the second redo
+	// chord beside Ctrl+Y; all three are clear of every other binding,
+	// and a modal's own key scope (note editor, palette, annot panel)
+	// takes the keys first, so typing there never edits the document.
+	c.OnShortcut(ui.Ctrl, ui.KeyZ, func() { s.Undo(s.Active()) })
+	c.OnShortcut(ui.Ctrl, ui.KeyY, func() { s.Redo(s.Active()) })
+	c.OnShortcut(ui.Ctrl|ui.Shift, ui.KeyZ, func() { s.Redo(s.Active()) })
+
 	// Escape closes the palette, else the search panel, else the go-to
 	// row, else disarms a pending annotation tool (and any of its
 	// in-flight gestures), else clears a text selection (one binding: a
