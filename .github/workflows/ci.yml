@@ -1,0 +1,48 @@
+# CI: the repo's gates on a Windows runner, on every push to master and
+# every PR. This is where the Windows-only surfaces (internal/app,
+# internal/print) finally run their tests mechanically: the macOS dev
+# machine cannot compile them, which is how three red app tests once
+# shipped to master (see AGENTS.md and ROADMAP's working rules). The
+# gates mirror dev.ps1 + AGENTS.md: build, vet, the core suite with
+# -race, then everything.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: build, vet, test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/gopdf-toolchain
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Core gate (internal/pdf with -race)
+        run: go test -race ./internal/pdf/...
+
+      - name: Full suite (internal/app and internal/print included)
+        run: go test ./...
+        env:
+          # Runners ship no CJK system fonts; the fork's fallback tests
+          # honor this knob to skip (AGENTS.md's commands block).
+          GOPDF_TEST_NO_CJK: '1'

@@ -23,6 +23,13 @@ module; core work is testable on any platform, UI work is Windows-only.
   review of the branch diff has been acted on.
 - `internal/pdf` stays free of mygo imports, pure Go + go-fitz, and
   honors the one-`*fitz.Document`-per-goroutine rule.
+- Releases are tags on master (`v*`), no release branch: the tag is
+  the release point. GitHub Actions builds the tagged commit and opens
+  a DRAFT release with GoPDF.exe and the Setup installer (the publish
+  click is manual); the tag must equal mygo.json's version or the
+  release build fails. ci.yml runs the same gates on every push and PR
+  on a Windows runner, which is also where the Windows-only app tests
+  execute mechanically (the macOS dev machine cannot).
 - The vendored fork (third_party/go-fitz) documents every new C helper
   as a numbered patch in its GOPDF_PATCHES.md.
 
