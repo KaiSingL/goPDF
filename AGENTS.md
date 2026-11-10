@@ -21,6 +21,10 @@ semantics; reviewers and agents quote its comment block verbatim).
   `GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go build ./...`
   (GOARCH=amd64 is REQUIRED: without it the arm64 host fails inside runtime/cgo;
   mingw-w64 is installed via brew). Same-env `go vet ./...` in the same env.
+  Cross-compiling proves only that it COMPILES: internal/app's test suite runs
+  nowhere but the Windows machine, so run `. .\dev.ps1 ; go test ./internal/app/`
+  there before merging any app-layer change (three app tests that could never
+  run on the Mac slipped through this gap and shipped red to master).
 - CGO_ENABLED=0 does NOT build here: the fork's document surface (search/selection
   quads, the PDF-layer patch 4 hooks) is cgo-only. Do not follow generic mygo
   advice telling you to run `CGO_ENABLED=0 go test ./...` in this repo.

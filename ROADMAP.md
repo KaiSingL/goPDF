@@ -16,7 +16,10 @@ module; core work is testable on any platform, UI work is Windows-only.
   master only after: (1) all related headless tests pass
   (`CGO_ENABLED=1 go test ./internal/pdf/...` and the branch's own UI
   view tests), (2) `internal/app` + `main` cross-compile clean for
-  `GOOS=windows` with mingw-w64 gcc, and (3) an independent OpenCode
+  `GOOS=windows` with mingw-w64 gcc, (3) any branch touching
+  `internal/app` or `main` has `go test ./internal/app/` green on the
+  Windows machine (cross-compile cannot run app tests; the macOS dev
+  machine cannot either), and (4) an independent OpenCode
   review of the branch diff has been acted on.
 - `internal/pdf` stays free of mygo imports, pure Go + go-fitz, and
   honors the one-`*fitz.Document`-per-goroutine rule.

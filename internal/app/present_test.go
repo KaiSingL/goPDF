@@ -96,19 +96,27 @@ func TestPresentationNavigation(t *testing.T) {
 // closing the presenting tab hands the window back.
 func TestPresentationEndsOnTabChangeAndClose(t *testing.T) {
 	s := reproState(t, 3)
-	tab := s.Active()
-	s.OpenTab(genTestPDF(t, 2))
+	first := s.Active()
+	// OpenTab ACTIVATES the new tab (state.go), so presentation below
+	// starts on it, not on the first tab.
+	second, err := s.OpenTab(genTestPDF(t, 2))
+	if err != nil {
+		t.Fatalf("OpenTab: %v", err)
+	}
+	// ReproState's cleanup only closes the first tab: this one's
+	// document must be released too, else its read stream keeps the
+	// generated file locked and t.TempDir's RemoveAll fails on Windows.
+	t.Cleanup(func() { s.CloseTab(second.ID) })
 	s.StartPresenting()
 	if s.presentingTab() == nil {
 		t.Fatal("entry failed")
 	}
 
-	second := s.Tabs[1]
-	s.SelectTabBy(second.ID)
+	s.SelectTabBy(first.ID)
 	if s.presentingTab() != nil {
 		t.Fatal("switching tabs kept presentation running")
 	}
-	if tab.Presenting {
+	if second.Presenting {
 		t.Fatal("the presenting tab kept its flag after the switch")
 	}
 	if s.PresentFullscreen {
@@ -119,10 +127,10 @@ func TestPresentationEndsOnTabChangeAndClose(t *testing.T) {
 	// the flag dies with the removed tab (asserting it, because a
 	// different active tab makes presentingTab() nil regardless: only
 	// THIS assertion can catch a lost CloseTab guard headlessly).
-	s.SelectTabBy(tab.ID)
+	s.SelectTabBy(second.ID)
 	s.StartPresenting()
-	s.CloseTab(tab.ID)
-	if tab.Presenting {
+	s.CloseTab(second.ID)
+	if second.Presenting {
 		t.Fatal("closing the presenting tab left its flag set")
 	}
 	if s.presentingTab() != nil {
@@ -156,7 +164,9 @@ func TestPresentationNumberJumpClamps(t *testing.T) {
 		t.Fatalf("digit buffer: %q, want the capped 1234", presentDigits)
 	}
 	tt.Key(0, ui.KeyEnter)
-	if tab.CurPage != 1233 {
+	// 1234 far exceeds the 5-page deck, so the jump clamps at the last
+	// slide (SetCurrentPage clamps to [0, NumPages-1]).
+	if tab.CurPage != 4 {
 		t.Fatalf("capped buffer jump landed on page %d, want the clamped last slide", tab.CurPage)
 	}
 	s.StopPresenting()
