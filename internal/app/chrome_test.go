@@ -293,7 +293,10 @@ func TestSearchPanelFlow(t *testing.T) {
 	buildIndex(t, tab)
 
 	tab.Navigate(2, 0) // away from the first hit, so the jump is visible
-	tt := ui.NewTester(panelShell(s), 1000, 700)
+	// 1200 keeps the whole toolbar flat (issue 6's undo/redo buttons
+	// added ~100px: at 1000 the Search button lives in the toolbar's
+	// overflow menu, by ui.Toolbar's own design).
+	tt := ui.NewTester(panelShell(s), 1200, 700)
 
 	// Hidden until toggled: no panel, no field, no empty-state hint.
 	if tt.HasText("Search document") || tt.HasText("Type and press Enter") {

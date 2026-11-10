@@ -237,6 +237,18 @@ func rebuildPalette(s *AppState) {
 				}
 			})
 		}
+		// Undo/redo (undo.go, issue 6) sit with the tools they revert;
+		// the run closures re-check at execution time.
+		cmd("Undo", func() {
+			if cur := s.Active(); cur != nil {
+				s.Undo(cur)
+			}
+		})
+		cmd("Redo", func() {
+			if cur := s.Active(); cur != nil {
+				s.Redo(cur)
+			}
+		})
 	}
 	cmd("Close Tab", func() { s.CloseActiveTab() })
 	// Saving (save.go, issue 3): Save only while there is something to

@@ -67,11 +67,13 @@ func TestTitleBarFileMenu(t *testing.T) {
 	tt.SetTitleBar(winButtons)
 
 	// The File menu carries the native menu bar's items, separators
-	// included.
+	// included: Open, then Save/Save As (issue 3's save wiring), then
+	// print/properties, tab handling, quit.
 	if err := tt.Click("File"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"Open…", "Open Recent", "-", "Print…", "Document Properties",
+	want := []string{"Open…", "Open Recent", "-", "Save", "Save As…",
+		"-", "Print…", "Document Properties",
 		"-", "Reopen Closed Tab", "Close Tab", "-", "Quit"}
 	if got := tt.Menu(); !slices.Equal(got, want) {
 		t.Fatalf("File menu = %q, want %q", got, want)

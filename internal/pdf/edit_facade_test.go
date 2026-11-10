@@ -140,13 +140,13 @@ func TestFacadeAnnotRoundTrip(t *testing.T) {
 	if _, ok := byID[fID]; !ok {
 		t.Fatalf("freetext ID %d missing from listing: %+v", fID, annots)
 	}
-	if h := byID[hID]; h.Type != fitz.AnnotHighlight || len(h.Quads) != 1 || h.Text != "" {
+	if h := byID[hID]; h.Type != fitz.AnnotHighlight || len(h.Quads) != 1 || h.Contents != "" {
 		t.Fatalf("highlight mapping: %+v", h)
 	}
-	if n := byID[nID]; n.Type != fitz.AnnotText || n.Text != "a note" {
+	if n := byID[nID]; n.Type != fitz.AnnotText || n.Contents != "a note" {
 		t.Fatalf("note mapping: %+v", n)
 	}
-	if f := byID[fID]; f.Type != fitz.AnnotFreeText || f.Text != "free body" {
+	if f := byID[fID]; f.Type != fitz.AnnotFreeText || f.Contents != "free body" {
 		t.Fatalf("freetext mapping: %+v", f)
 	}
 

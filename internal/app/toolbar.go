@@ -4,10 +4,12 @@
 //	[sidebar | back | forward] │ [zoom − 100% + | fit segmented] │
 //	[prev page | n / N | next page] ⟨spacer⟩ [search | share | print | more]
 //
-// The page indicator is a button: it opens the "Go to page" row that
-// appears directly under the toolbar (gotoRow, below) — the inline page
-// field left the status bar for here. Comment stays out of v1 (spec §2)
-// and its dead disabled button with it.
+// plus the annotation group (annotate.go's tools and undo.go's
+// undo/redo) behind the annotate permission. The page indicator is a
+// button: it opens the "Go to page" row that appears directly under the
+// toolbar (gotoRow, below) — the inline page field left the status bar
+// for here. Comment stays out of v1 (spec §2) and its dead disabled
+// button with it.
 //
 // API notes (verified against mygo v0.6.4 source):
 //   - ui.Toolbar lays its controls out flat-until-hovered, moves overflow
@@ -108,6 +110,21 @@ func toolbar(c *ui.Context, s *AppState) ui.Element {
 				"Sticky note: click a page to place it", chromeIcons.note)
 			annotToolButton(c, s, t, AnnotToolSquare,
 				"Square: drag inside a page", chromeIcons.square)
+			// Undo/redo (undo.go, issue 6) close the annotation group:
+			// they undo its edits, nothing else. Disabled without a
+			// drainable stack or while a mutation is mid-flight; the
+			// keys (shortcuts.go) and the palette route through the
+			// same AppState.Undo/Redo.
+			ui.Divider(c)
+			undo := ui.Button(c, "").Label("Undo").Tooltip("Undo (Ctrl+Z)").
+				Disabled(!t.CanUndo())
+			undo.Children(func() { ui.Icon(c, chromeIcons.undo).FontSize(16) })
+			undo.OnClick(func() { s.Undo(t) })
+
+			redo := ui.Button(c, "").Label("Redo").Tooltip("Redo (Ctrl+Y, Ctrl+Shift+Z)").
+				Disabled(!t.CanRedo())
+			redo.Children(func() { ui.Icon(c, chromeIcons.redo).FontSize(16) })
+			redo.OnClick(func() { s.Redo(t) })
 		}
 
 		// The spacer absorbs the leftover width, keeping the right section
